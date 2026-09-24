@@ -661,3 +661,33 @@ mod persistence_tests {
         assert!(RecordingManager::new().persists_session());
     }
 }
+
+#[cfg(all(test, target_os = "macos"))]
+mod hardware_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires live system audio playback and macOS audio capture permission"]
+    async fn system_audio_reaches_live_pcm_mixer() {
+        let system = Arc::new(super::super::devices::default_output_device().unwrap());
+        let mut manager = RecordingManager::new_with_persistence(false);
+        let (sender, mut receiver) = mpsc::channel(8);
+        let _transcription = manager
+            .start_recording(None, Some(system), false, Some(3_000), Some(sender))
+            .await
+            .unwrap();
+
+        let mut peak = 0.0f32;
+        for _ in 0..5 {
+            let chunk = tokio::time::timeout(Duration::from_secs(10), receiver.recv())
+                .await
+                .expect("no system audio reached the live mixer in 10 seconds")
+                .expect("live mixer closed before audio arrived");
+            assert_eq!(chunk.data.len(), 28_800);
+            assert_eq!(chunk.sample_rate, 48_000);
+            peak = peak.max(chunk.data.iter().map(|sample| sample.abs()).fold(0.0, f32::max));
+        }
+        assert!(peak > 0.001, "system audio produced only silence; play test audio before running this test");
+        manager.stop_streams_only().await.unwrap();
+    }
+}

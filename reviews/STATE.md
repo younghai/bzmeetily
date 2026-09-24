@@ -9,7 +9,7 @@ Permanent user constraint: **never delete** `$MEETING_ROOT/v2.0/meetily/target/d
 | Pass | Target | Status | Evidence |
 |---|---|---|---|
 | 1 | 2026-09-24 15:30–15:56 KST | completed; release blocked | `pass-01.md` |
-| 2 | 2026-09-24 about 18:50 KST | pending | `pass-02.md` |
+| 2 | 2026-09-24 18:51–19:09 KST | completed; release blocked | `pass-02.md` |
 | 3 | 2026-09-24 about 21:50 KST | pending | `pass-03.md` |
 
-After pass 3, update the release decision from actual test and distribution evidence. The 2.0.1 ad-hoc candidate in the older tree is not a general release. Known blockers: packaged native computer-audio capture returned zero chunks; mixed audio accuracy, signing/notarization, and clean-Mac E2E are unverified. Never convert `pending` to `passed` by schedule alone.
+After pass 3, update the release decision from actual test and distribution evidence. The 2.0.1 ad-hoc candidate in the older tree is not a general release. Pass 02 confirmed non-silent computer audio through a Rust test binary, but the packaged-app zero-chunk failure was not retested because this Mac remained locked. Mixed audio accuracy, sustained memory, signing/notarization, and clean-Mac E2E remain unverified. Never convert `pending` to `passed` by schedule alone.

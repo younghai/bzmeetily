@@ -1792,7 +1792,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn incomplete_response_cleans_partial_file_and_cache() {
+    async fn incomplete_response_keeps_partial_file_for_resume() {
         let dir = tempfile::tempdir().unwrap();
         let engine = WhisperEngine::new_with_models_dir(Some(dir.path().to_path_buf())).unwrap();
         let model_path = dir.path().join("ggml-tiny.bin");
@@ -1807,7 +1807,7 @@ mod tests {
 
         assert!(error.to_string().contains("Failed to read chunk"));
         assert!(!engine.active_downloads.lock().await.contains_key("tiny"));
-        assert!(!model_path.exists());
+        assert_eq!(std::fs::metadata(&model_path).unwrap().len(), 4);
         assert!(matches!(
             engine
                 .available_models
@@ -1849,8 +1849,8 @@ mod tests {
         server.await.unwrap();
 
         assert!(!engine.active_downloads.lock().await.contains_key("tiny"));
-        assert!(!model_path.exists());
+        assert_eq!(std::fs::metadata(&model_path).unwrap().len(), 2 * 1024 * 1024);
         let models = engine.discover_models().await.unwrap();
-        assert!(matches!(tiny_model(&models).status, ModelStatus::Missing));
+        assert!(matches!(tiny_model(&models).status, ModelStatus::Corrupted { .. }));
     }
 }

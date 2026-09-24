@@ -37,6 +37,7 @@ struct AudioMixerRingBuffer {
     max_buffer_size: usize,
     microphone_enabled: bool,
     system_enabled: bool,
+    received_chunks: u64,
 }
 
 impl AudioMixerRingBuffer {
@@ -61,18 +62,16 @@ impl AudioMixerRingBuffer {
             max_buffer_size,
             microphone_enabled,
             system_enabled,
+            received_chunks: 0,
         }
     }
 
     fn add_samples(&mut self, device_type: DeviceType, samples: Vec<f32>) {
         // Log buffer health periodically for diagnostics
-        static mut SAMPLE_COUNTER: u64 = 0;
-        unsafe {
-            SAMPLE_COUNTER += 1;
-            if SAMPLE_COUNTER % 200 == 0 {
-                debug!("📊 Ring buffer status: mic={} samples, sys={} samples (max={})",
-                       self.mic_buffer.len(), self.system_buffer.len(), self.max_buffer_size);
-            }
+        self.received_chunks = self.received_chunks.wrapping_add(1);
+        if self.received_chunks % 200 == 0 {
+            debug!("📊 Ring buffer status: mic={} samples, sys={} samples (max={})",
+                   self.mic_buffer.len(), self.system_buffer.len(), self.max_buffer_size);
         }
 
         match device_type {
