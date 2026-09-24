@@ -1,0 +1,4 @@
+# Live interpretation latency repair
+1. completed: reproduced fixed-slice ASR truncation/hallucinations with actual models and shared-queue/cancellation/recovery failures with focused red tests.
+2. completed: separated inference lanes, added contextual live revisions/coalescing, cancellation, bounded retry and visible recovery while preserving memory-only sessions.
+3. completed: 90/90 tests, TypeScript and final web build passed; localhost restarted and ready. Actual Brave mixed-input live captions and stop observed; final model pipeline measured first JA 1.861s / KO 2.195s over 78.8s, no errors. Final language gate verified with real API noise and sustained input; post-gate mixed-device recheck and in-app microphone remain explicitly unverified. Both final visual reviewers passed all nine fresh captures. Report and guide updated; QA server/tabs closed, user page restored idle.

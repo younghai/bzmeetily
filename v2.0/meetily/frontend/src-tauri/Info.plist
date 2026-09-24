@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Meetily2가 회의 원음(마이크)을 전사·통역하기 위해 마이크 접근이 필요합니다.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Meetily2가 컴퓨터 소리(시스템 오디오)를 전사·통역하기 위해 오디오 캡처 권한이 필요합니다.</string>
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>Meetily2가 컴퓨터 소리를 전사·통역하기 위해 시스템 오디오 출력 캡처 권한이 필요합니다.</string>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>

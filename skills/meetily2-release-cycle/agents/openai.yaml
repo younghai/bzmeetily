@@ -1,0 +1,3 @@
+interface:
+  display_name: "Meetily2 릴리스 점검"
+  short_description: "코드·테스트·실기 E2E 증거를 남기는 반복 점검"

@@ -1,0 +1,120 @@
+{
+    "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+    "productName": "Meetily2",
+    "version": "2.0.1",
+    "identifier": "ai.meetily.interp",
+    "build": {
+        "frontendDist": "../out",
+        "devUrl": "http://localhost:3118",
+        "beforeDevCommand": "pnpm dev",
+        "beforeBuildCommand": "pnpm build"
+    },
+    "app": {
+        "windows": [
+            {
+                "title": "Meetily2",
+                "width": 1440,
+                "height": 900,
+                "maximized": true,
+                "resizable": true,
+                "fullscreen": false,
+                "theme": "Light",
+                "decorations": true
+            }
+        ],
+        "macOSPrivateApi": true,
+        "security": {
+            "csp": {
+                "default-src": "'self'",
+                "style-src": "'self' 'unsafe-inline'",
+                "img-src": "'self' asset: https://asset.localhost data:",
+                "connect-src": "'self' http://localhost:11434 http://localhost:5167 http://localhost:8178 http://localhost:3118 http://127.0.0.1:3118 ws://localhost:3118 http://api.ollama.ai"
+            },
+            "assetProtocol": {
+                "enable": true,
+                "scope": [
+                    "$APPDATA/**"
+                ]
+            },
+            "capabilities": [
+                {
+                    "identifier": "main",
+                    "description": "Main window capability with file system and media access",
+                    "windows": [
+                        "main"
+                    ],
+                    "permissions": [
+                        "fs:default",
+                        "fs:allow-read-file",
+                        "fs:read-all",
+                        "fs:write-all",
+                        "fs:allow-app-read",
+                        "fs:allow-app-write",
+                        "fs:allow-download-write",
+                        "fs:allow-download-read",
+                        "fs:scope-download",
+                        "core:path:default",
+                        "core:event:default",
+                        "core:window:default",
+                        "core:window:allow-close",
+                        "core:window:allow-minimize",
+                        "core:window:allow-set-fullscreen",
+                        "core:app:default",
+                        "core:resources:default",
+                        "core:menu:default",
+                        "core:tray:default",
+                        "core:window:allow-set-title",
+                        "store:default",
+                        "notification:default",
+                        "notification:allow-is-permission-granted",
+                        "process:default",
+                        {
+                            "identifier": "fs:scope",
+                            "allow": [
+                                {
+                                    "path": "$APPDATA/*"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+    },
+    "bundle": {
+        "active": true,
+        "targets": [
+            "app",
+            "dmg"
+        ],
+        "createUpdaterArtifacts": false,
+        "icon": [
+            "icons/icon.png",
+            "icons/app_icon.icns",
+            "icons/app_icon.ico"
+        ],
+        "resources": [
+            "templates/*.json",
+            "resources/web-static",
+            "resources/whisper-public",
+            "resources/licenses"
+        ],
+        "externalBin": [
+            "binaries/llama-helper",
+            "binaries/ffmpeg",
+            "binaries/llama-server",
+            "binaries/meetily-server",
+            "binaries/whisper-server",
+            "binaries/ollama"
+        ],
+        "macOS": {
+            "entitlements": "entitlements.plist",
+            "signingIdentity": "-",
+            "hardenedRuntime": true,
+            "minimumSystemVersion": "14.2"
+        },
+        "windows": {
+            "signCommand": "powershell -ExecutionPolicy Bypass -File scripts/sign-windows.ps1 -FilePath %1"
+        }
+    }
+}

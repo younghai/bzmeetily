@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+fail() {
+  printf 'cidre CommandLineTools xcodebuild wrapper: %s\n' "$*" >&2
+  exit 64
+}
+
+project=''
+sdk=''
+arch=''
+configuration=''
+symroot=''
+macos_deployment_target='12.0'
+build_action_seen=0
+declare -a targets=()
+
+while (($#)); do
+  case "$1" in
+    -project)
+      (($# >= 2)) || fail 'missing value for -project'
+      project=$2
+      shift 2
+      ;;
+    -sdk)
+      (($# >= 2)) || fail 'missing value for -sdk'
+      sdk=$2
+      shift 2
+      ;;
+    -arch)
+      (($# >= 2)) || fail 'missing value for -arch'
+      arch=$2
+      shift 2
+      ;;
+    -configuration)
+      (($# >= 2)) || fail 'missing value for -configuration'
+      configuration=$2
+      shift 2
+      ;;
+    -target)
+      (($# >= 2)) || fail 'missing value for -target'
+      targets+=("$2")
+      shift 2
+      ;;
+    build)
+      ((build_action_seen == 0)) || fail 'duplicate build action'
+      build_action_seen=1
+      shift
+      ;;
+    SYMROOT=*)
+      symroot=${1#SYMROOT=}
+      shift
+      ;;
+    MACOSX_DEPLOYMENT_TARGET=*)
+      macos_deployment_target=${1#MACOSX_DEPLOYMENT_TARGET=}
+      shift
+      ;;
+    IPHONEOS_DEPLOYMENT_TARGET=*|TVOS_DEPLOYMENT_TARGET=*|WATCHOS_DEPLOYMENT_TARGET=*|XROS_DEPLOYMENT_TARGET=*)
+      shift
+      ;;
+    *)
+      fail "unsupported argument: $1"
+      ;;
+  esac
+done
+
+[[ "$project" == './pomace/pomace.xcodeproj' ]] || fail 'only ./pomace/pomace.xcodeproj is supported'
+[[ -f "$project/project.pbxproj" ]] || fail 'run from the cidre crate root containing pomace/pomace.xcodeproj'
+[[ "$sdk" == 'macosx' ]] || fail "only the macosx SDK is supported (received: $sdk)"
+[[ "$arch" == 'arm64' || "$arch" == 'x86_64' ]] || fail "unsupported architecture: $arch"
+[[ "$configuration" == 'Debug' || "$configuration" == 'Release' ]] || fail "unsupported configuration: $configuration"
+[[ "$symroot" == /* ]] || fail 'SYMROOT must be an absolute path'
+[[ "$macos_deployment_target" =~ ^[0-9]+([.][0-9]+){1,2}$ ]] || fail 'invalid MACOSX_DEPLOYMENT_TARGET'
+((build_action_seen == 1)) || fail 'the build action is required'
+((${#targets[@]} > 0)) || fail 'at least one explicit -target is required'
+
+sdk_path=$(xcrun --sdk macosx --show-sdk-path)
+clang=$(xcrun --sdk macosx --find clang)
+libtool=$(xcrun --find libtool)
+output_dir="$symroot/$configuration"
+object_dir="$output_dir/cidre-pomace-objects-$arch"
+mkdir -p "$object_dir"
+
+declare -a optimization_flags=(-O0 -g)
+if [[ "$configuration" == 'Release' ]]; then
+  optimization_flags=(-Os)
+fi
+
+for target in "${targets[@]}"; do
+  case "$target" in
+    app|at|av|av_kit|ca|ci|cl|core_audio|core_motion|gc|mc|ml|mlc|mps|mpsg|mtk|mtl|nl|ns|sc|sn|un|ut|vn|wk)
+      ;;
+    *)
+      fail "unsupported cidre target: $target"
+      ;;
+  esac
+  source_file="pomace/$target/$target.m"
+  [[ -f "$source_file" ]] || fail "missing Objective-C source: $source_file"
+
+  object_file="$object_dir/$target.o"
+  archive_file="$output_dir/lib$target.a"
+
+  "$clang" \
+    -x objective-c \
+    -std=gnu11 \
+    -fmodules \
+    -fobjc-arc \
+    -arch "$arch" \
+    -isysroot "$sdk_path" \
+    "-mmacosx-version-min=$macos_deployment_target" \
+    "${optimization_flags[@]}" \
+    -c "$source_file" \
+    -o "$object_file"
+
+  "$libtool" -static -o "$archive_file" "$object_file"
+done
