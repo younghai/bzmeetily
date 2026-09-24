@@ -453,7 +453,7 @@ const Sidebar: React.FC = () => {
 
     return (
       <TooltipProvider>
-        <div className="flex flex-col items-center space-y-4 mt-4">
+        <div className="flex flex-col items-center space-y-4 mt-4 pt-12">
           <Logo isCollapsed={isCollapsed} />
 
           <Tooltip>
@@ -688,7 +688,7 @@ const Sidebar: React.FC = () => {
 
           <div className="flex-1">
             {!isCollapsed && (
-              <div className="p-3">
+              <div className="p-3 pt-12">
                 {/* <span className="text-lg text-center border rounded-full bg-blue-50 border-white font-semibold text-gray-700 mb-2 block items-center">
                   <span>Meetily</span>
                 </span> */}

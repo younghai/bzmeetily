@@ -2,7 +2,7 @@
 
 Meetily2 is a local-first AI meeting assistant for Apple Silicon Macs. It offers two separate workflows: live Japanese-to-Korean interpretation, and meeting recording, transcription, and Korean summaries. The desktop app also serves a browser interface at `http://127.0.0.1:3118/` on the same Mac.
 
-> **Release status (24 September 2026):** The `2.0.2-rc.4` DMG is an ad-hoc development candidate, not an approved public installer. A prior candidate exercised computer audio, microphone, and both sources on the build Mac; Core Audio startup remains a release risk in the current candidate; mixed-input accuracy, long-session memory use, Developer ID signing, notarization, and a clean-Mac test remain release gates. See [review status](reviews/STATE.md) and the [DMG audit](v2.0/docs/distribution-dmg.md) before relying on a build for a meeting.
+> **Release status (24 September 2026):** The `2.0.2-rc.6` DMG is an ad-hoc development candidate, not an approved public installer. RC4 exercised combined computer audio and microphone on the build Mac; RC6 additionally fixes the native window-control layout. Mixed-input accuracy, long-session memory use, Developer ID signing, notarization, and a clean-Mac test remain release gates. See [review status](reviews/STATE.md) and the [DMG audit](v2.0/docs/distribution-dmg.md) before relying on a build for a meeting.
 
 ## What it does
 
@@ -45,7 +45,7 @@ The first-run wizard downloads Whisper large-v3-turbo (about 1.6 GB) and `qwen3.
 
 ### Install an app bundle
 
-There is no generally approved, signed Meetily2 DMG in this repository yet. The [2.0.2 RC4 GitHub prerelease](https://github.com/younghai/bzmeetily/releases/tag/v2.0.2-rc.4) is an experimental development candidate for a trusted test Mac. Open its DMG, drag `Meetily2.app` to **Applications**, and launch the app. An ad-hoc build can trigger a Gatekeeper warning; it has not passed the clean-Mac release checks. Do not treat an older `2.0.0` or `2.0.1` DMG as containing later repository changes.
+There is no generally approved, signed Meetily2 DMG in this repository yet. The [2.0.2 RC6 GitHub prerelease](https://github.com/younghai/bzmeetily/releases/tag/v2.0.2-rc.6) is an experimental development candidate for a trusted test Mac. Open its DMG, drag `Meetily2.app` to **Applications**, and launch the app. An ad-hoc build can trigger a Gatekeeper warning; it has not passed the clean-Mac release checks. Do not treat an older `2.0.0`, `2.0.1`, or `2.0.2-rc.4` DMG as containing the latest window-control layout.
 
 On first launch:
 

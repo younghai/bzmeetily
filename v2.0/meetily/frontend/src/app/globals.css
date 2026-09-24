@@ -216,3 +216,8 @@
     overflow: visible !important;
   }
 }
+
+/* Reserve the native interpretation header for the always-visible window controls. */
+body:has([aria-label="macOS 창 제어"]) [aria-labelledby="interpretation-view-title"] > header:first-child {
+  padding-left: 8rem;
+}

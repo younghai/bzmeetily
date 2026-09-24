@@ -18,7 +18,7 @@ export function MacWindowControls() {
     <div
       role="toolbar"
       aria-label="macOS 창 제어"
-      className="fixed right-28 top-9 z-[60] flex items-center gap-1 rounded-lg border border-slate-200 bg-white/95 p-1 shadow-sm"
+      className="fixed left-2 top-3 z-[60] flex items-center gap-1 rounded-lg border border-slate-200 bg-white/95 p-1 shadow-sm"
     >
       <button
         type="button"
