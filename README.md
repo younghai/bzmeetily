@@ -4,6 +4,30 @@ Meetily2 is a local-first AI meeting assistant for Apple Silicon Macs. It offers
 
 > **Release status (24 September 2026):** The `2.0.2-rc.6` DMG is an ad-hoc development candidate, not an approved public installer. RC4 exercised combined computer audio and microphone on the build Mac; RC6 additionally fixes the native window-control layout. Mixed-input accuracy, long-session memory use, Developer ID signing, notarization, and a clean-Mac test remain release gates. See [review status](reviews/STATE.md) and the [DMG audit](v2.0/docs/distribution-dmg.md) before relying on a build for a meeting.
 
+## Latest macOS app and updates
+
+**Meetily2 2.0.2 RC6** is the current Apple Silicon macOS development build. The app is distributed as a GitHub Release asset; the repository contains its source and build instructions, not the DMG binary or downloaded models.
+
+| Download | Link |
+| --- | --- |
+| macOS app (`.dmg`) | [Download Meetily2 2.0.2 RC6](https://github.com/younghai/bzmeetily/releases/download/v2.0.2-rc.6/Meetily2_2.0.2-rc.6_aarch64.dmg) |
+| SHA-256 checksum | [Download checksum file](https://github.com/younghai/bzmeetily/releases/download/v2.0.2-rc.6/Meetily2_2.0.2-rc.6_aarch64.dmg.sha256) |
+| Detailed release notes | [2.0.2 RC6 prerelease](https://github.com/younghai/bzmeetily/releases/tag/v2.0.2-rc.6) |
+
+The RC6 DMG's SHA-256 is `0a54aea9fb5a3cfaeeabdcee8cd6300839bd9bcfa189e1e5dafeb0f0b8274627`.
+
+Changes included in RC6 compared with the older 2.0.1 DMG:
+
+| Area | What changed |
+| --- | --- |
+| macOS window controls | Added in-app close, minimize, and full-screen controls below the upper-left title bar. The sidebar and interpretation title now leave room for them when macOS screen sharing covers the native traffic lights. Close hides the app to the tray. |
+| Live interpretation timeline | Shows one card per recognized Japanese turn with a timestamp and Japanese/Korean preview. Earlier captions remain available while later turns arrive; first/latest navigation helps return to previous dialogue. |
+| Translation consistency | Uses up to two completed Japanese/Korean turns as bounded context to maintain terms and level of formality. When a Japanese turn is revised, its outdated Korean text is cleared until the matching translation arrives. |
+| Audio startup and errors | Bounds Core Audio startup waits, reports failures in the native view, and does not silently switch to microphone-only input when computer audio was requested. |
+| DMG packaging | Refuses to overwrite an existing same-version image and checks the app bundle for local build-home paths before packaging. |
+
+The RC6 app's window controls were exercised on the build Mac, including full-screen entry/exit, minimization, and close-to-tray. A prior RC4 build produced four retained Japanese/Korean timeline turns from combined audio on that Mac; RC6 includes that audio code, but its audio accuracy and long-session memory use have not been remeasured. The [release notes](v2.0/docs/release-2.0.2-rc.6.md) list the remaining validation and distribution gates.
+
 ## What it does
 
 | Workflow | User experience | Data behavior |
