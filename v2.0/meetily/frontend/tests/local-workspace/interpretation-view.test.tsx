@@ -30,7 +30,7 @@ describe('interpretation view', () => {
     expect(html.match(/tabindex="0"/g)?.length).toBe(2);
   });
 
-  test('keeps consecutive speech chunks in reading order across longer conversation paragraphs', () => {
+  test('keeps each speech turn in reading order and individually reachable from the timeline', () => {
     const items = Array.from({ length: 8 }, (_, index) => ({
       id: `chunk-${index}`,
       sourceText: `原文${index}。`,
@@ -38,10 +38,11 @@ describe('interpretation view', () => {
       error: index === 3 ? '연결 확인 필요' : null,
     }));
     const groups = groupInterpretationItems(items);
-    expect(groups.map((group) => group.length)).toEqual([6, 2]);
+    expect(groups.map((group) => group.length)).toEqual(Array(8).fill(1));
     expect(groups.flat()).toEqual(items);
     const html = renderToStaticMarkup(<InterpretationView open items={items} onClose={() => {}} />);
-    expect(html.match(/<article/g)?.length).toBe(4);
+    expect(html.match(/<article/g)?.length).toBe(16);
+    expect(html.match(/대화 보기/g)?.length).toBe(8);
     expect(html).toContain('연결 확인 필요');
     expect(html.replace(/<[^>]*>/g, '')).toContain(items.map((item) => item.sourceText).join(''));
   });
@@ -60,7 +61,9 @@ describe('interpretation view', () => {
 
     // Then: earlier dialogue remains discoverable in the visible timeline.
     expect(html).toContain('aria-label="대화 타임라인"');
-    expect(html).toContain('이전 대화');
+    expect(html).toContain('대화 타임라인 · 7개');
+    expect(html.match(/대화 보기/g)?.length).toBe(7);
+    expect(html).toContain('처음 대화');
     expect(html).toContain('発言0。');
     expect(html).toContain('발언 0.');
     expect(html).toContain('최근 대화');

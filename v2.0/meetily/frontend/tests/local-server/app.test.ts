@@ -7,13 +7,14 @@ import { tmpdir } from 'node:os';
 import { createLocalApp } from '../../local-server/app';
 import { LocalStore } from '../../local-server/database';
 import type { InferenceClient } from '../../local-server/inference';
-import type { LocalSegment } from '../../src/local/contracts';
+import type { LocalSegment, TranslationContextTurn } from '../../src/local/contracts';
 
 const roots: string[] = [];
 
 class FakeInference implements InferenceClient {
   calls = 0;
   translationSignal?: AbortSignal;
+  translationContext: readonly TranslationContextTurn[] = [];
   lastContext: { readonly sequence: number; readonly start: number; readonly duration: number; readonly language?: string; readonly interpret?: boolean; readonly signal?: AbortSignal } | null = null;
   async status() { return { ready: true, whisper: { ready: true, model: 'test', error: null }, ollama: { ready: true, model: 'test', error: null } }; }
   async transcribe(_audio: Blob, context: { readonly sequence: number; readonly start: number; readonly duration: number }): Promise<readonly LocalSegment[]> {
@@ -21,7 +22,11 @@ class FakeInference implements InferenceClient {
     this.lastContext = context;
     return [{ id: crypto.randomUUID(), sequence: context.sequence, start: context.start, end: context.start + context.duration, sourceText: 'こんにちは', translation: '안녕하세요', translationError: null }];
   }
-  async translate(_text: string, signal?: AbortSignal) { this.translationSignal = signal; return { text: '안녕하세요', elapsedMs: 1 }; }
+  async translate(_text: string, context: readonly TranslationContextTurn[], signal?: AbortSignal) {
+    this.translationContext = context;
+    this.translationSignal = signal;
+    return { text: '안녕하세요', elapsedMs: 1 };
+  }
   async summarize() { return '# 요약'; }
 }
 
@@ -233,9 +238,10 @@ function wavFixture(): ArrayBuffer {
   const { app, store, inference } = await fixture();
   const controller = new AbortController();
   await app(writeRequest('http://127.0.0.1:3118/api/local/transcribe?sequence=0&start=0&duration=1', {method:'POST',body:new Uint8Array(4),headers:{'content-type':'audio/wav'},signal:controller.signal}));
-  await app(writeRequest('http://127.0.0.1:3118/api/local/translate', {method:'POST',body:JSON.stringify({text:'テスト',sourceLanguage:'ja',targetLanguage:'ko'}),signal:controller.signal}));
+  await app(writeRequest('http://127.0.0.1:3118/api/local/translate', {method:'POST',body:JSON.stringify({text:'テスト',sourceLanguage:'ja',targetLanguage:'ko',context:[{sourceText:'前の発言',translation:'이전 발언'}]}),signal:controller.signal}));
   controller.abort();
   expect(inference.lastContext?.signal?.aborted).toBe(true);
+  expect(inference.translationContext).toEqual([{ sourceText: '前の発言', translation: '이전 발언' }]);
   expect(inference.translationSignal?.aborted).toBe(true);
   store.close();
  });

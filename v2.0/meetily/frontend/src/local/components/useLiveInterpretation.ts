@@ -51,7 +51,7 @@ export function useLiveInterpretation({ status, startCaptureImpl }: Options) {
 
   if (translationQueueRef.current === null) {
     translationQueueRef.current = new InterpretationQueue(
-      (text, signal) => requestTranslation(text, signal),
+      ({ text, context }, signal) => requestTranslation(text, context, signal),
       (snapshot) => {
         if (mountedRef.current) setTranslationSnapshot(snapshot);
       },

@@ -40,10 +40,16 @@ export const serviceStatusSchema = z.object({
   ollama: z.object({ ready: z.boolean(), model: z.string(), error: z.string().nullable() }),
 });
 export type ServiceStatus = z.infer<typeof serviceStatusSchema>;
+export const translationContextTurnSchema = z.object({
+  sourceText: z.string().trim().min(1).max(3000),
+  translation: z.string().trim().min(1).max(3000),
+});
+export type TranslationContextTurn = z.infer<typeof translationContextTurnSchema>;
 export const translationRequestSchema = z.object({
   text: z.string().trim().min(1).max(12000),
   sourceLanguage: z.literal('ja'),
   targetLanguage: z.literal('ko'),
+  context: z.array(translationContextTurnSchema).max(2).default([]),
 });
 export const translationSchema = z.object({ text: z.string(), elapsedMs: z.number().nonnegative() });
 export const summarySchema = z.object({ markdown: z.string() });

@@ -25,7 +25,7 @@ describe('live inference request recovery',()=>{
  test('honors caller cancellation and does not retry it',async()=>{
   const controller=new AbortController();let attempts=0;
   globalThis.fetch=Object.assign(async()=>{attempts++;controller.abort();throw new DOMException('cancelled','AbortError');},{preconnect:originalFetch.preconnect});
-  await expect(requestTranslation('テスト',controller.signal)).rejects.toHaveProperty('name','AbortError');
+  await expect(requestTranslation('テスト',[],controller.signal)).rejects.toHaveProperty('name','AbortError');
   expect(attempts).toBe(1);
  });
  test('adds a live request deadline even when caller did not supply a signal',async()=>{
@@ -33,5 +33,19 @@ describe('live inference request recovery',()=>{
   globalThis.fetch=Object.assign(async(_input:Parameters<typeof fetch>[0],init?:RequestInit)=>{received=init?.signal;return Response.json({text:'테스트',elapsedMs:1});},{preconnect:originalFetch.preconnect});
   await requestTranslation('テスト');
   expect(received).toBeInstanceOf(AbortSignal);
+ });
+ test('sends prior turns as structured translation context',async()=>{
+  let body: unknown;
+  globalThis.fetch=Object.assign(async(_input:Parameters<typeof fetch>[0],init?:RequestInit)=>{
+   body=JSON.parse(String(init?.body));
+   return Response.json({text:'어떻게 생각하십니까?',elapsedMs:1});
+  },{preconnect:originalFetch.preconnect});
+  await requestTranslation('どうお考えでしょうか。',[{sourceText:'本日はありがとうございます。',translation:'오늘 와 주셔서 감사합니다.'}]);
+  expect(body).toEqual({
+   text:'どうお考えでしょうか。',
+   sourceLanguage:'ja',
+   targetLanguage:'ko',
+   context:[{sourceText:'本日はありがとうございます。',translation:'오늘 와 주셔서 감사합니다.'}],
+  });
  });
 });

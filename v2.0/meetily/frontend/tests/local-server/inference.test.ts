@@ -91,7 +91,7 @@ describe('LocalInference', () => {
     servers.push(ollama);
     const inference = createInference(serverPort(ollama), 9);
     const controller = new AbortController();
-    const translation = inference.translate('취소할 발언', controller.signal);
+    const translation = inference.translate('취소할 발언', [], controller.signal);
     await requestStarted.promise;
     const rejection = translation.catch((error: unknown) => error);
 
@@ -137,7 +137,7 @@ describe('LocalInference', () => {
     await expect(translation).rejects.toMatchObject({ code: 'INFERENCE_FAILED', status: 502 });
   });
 
-  it('requests deterministic non-thinking structured Korean translation', async () => {
+  it('sends bounded prior turns separately from the current Korean translation target', async () => {
     // Given
     let captured: unknown = null;
     const ollama = Bun.serve({ port: 0, fetch: async (request) => {
@@ -148,7 +148,9 @@ describe('LocalInference', () => {
     const inference = createInference(serverPort(ollama), 9);
 
     // When
-    const result = await inference.translate('こんにちは');
+    const result = await inference.translate('どう思う？', [
+      { sourceText: '本日はありがとうございます。', translation: '오늘 와 주셔서 감사합니다.' },
+    ]);
 
     // Then
     const requestSchema = z.object({
@@ -156,9 +158,18 @@ describe('LocalInference', () => {
       stream: z.literal(false),
       keep_alive: z.literal('5m'),
       options: z.object({ temperature: z.literal(0) }),
+      messages: z.tuple([
+        z.object({ role: z.literal('system'), content: z.string().min(1) }),
+        z.object({ role: z.literal('user'), content: z.string().transform((content) => JSON.parse(content)) }),
+      ]),
     });
     expect(result.text).toBe('안녕하세요');
-    expect(requestSchema.parse(captured)).toBeDefined();
+    const request = requestSchema.parse(captured);
+    expect(request.messages[1].content).toEqual({
+      context: [{ sourceText: '本日はありがとうございます。', translation: '오늘 와 주셔서 감사합니다.' }],
+      targetRegister: 'plain',
+      current: 'どう思う？',
+    });
   });
 
   it('keeps Japanese source text when translation fails', async () => {

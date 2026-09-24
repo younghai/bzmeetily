@@ -10,6 +10,6 @@ Permanent user constraint: **never delete** `$MEETING_ROOT/v2.0/meetily/target/d
 |---|---|---|---|
 | 1 | 2026-09-24 15:30–15:56 KST | completed; release blocked | `pass-01.md` |
 | 2 | 2026-09-24 18:51–19:09 KST | completed; release blocked | `pass-02.md` |
-| 3 | 2026-09-24 about 21:50 KST | pending | `pass-03.md` |
+| 3 | 2026-09-24 20:25–20:37 KST | completed; development candidate only | `pass-03.md` |
 
-After pass 3, update the release decision from actual test and distribution evidence. The 2.0.1 ad-hoc candidate in the older tree is not a general release. Pass 02 confirmed non-silent computer audio through a Rust test binary, but the packaged-app zero-chunk failure was not retested because this Mac remained locked. Mixed audio accuracy, sustained memory, signing/notarization, and clean-Mac E2E remain unverified. Never convert `pending` to `passed` by schedule alone.
+Release gate after pass 3: **general distribution blocked**. The 2.0.2 RC1 app on the build Mac displayed four live Japanese/Korean turns from a 26-second combined-audio playback and preserved earlier turns in a navigable timeline. Earlier same-session checks exercised system-only, microphone-only, and combined input in the prior app bundle, but microphone ASR errors occurred. The new DMG passed checksum/image/signature validation and is ad-hoc signed. Browser microphone capture in the Codex in-app browser, mixed-audio accuracy across real conditions, a 30–60 minute memory run, meeting/summary E2E in the new candidate, Developer ID signing/notarization, and clean-Mac E2E remain open. It may be published only as a clearly labeled prerelease development candidate; never infer a passed gate from the schedule.

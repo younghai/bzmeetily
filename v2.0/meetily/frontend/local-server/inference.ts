@@ -1,6 +1,11 @@
 import { z } from 'zod';
 
-import { serviceStatusSchema, translationSchema, type LocalSegment } from '../src/local/contracts';
+import {
+  serviceStatusSchema,
+  translationSchema,
+  type LocalSegment,
+  type TranslationContextTurn,
+} from '../src/local/contracts';
 import { LocalServerError } from './errors';
 
 export interface InferenceClient {
@@ -10,7 +15,7 @@ export interface InferenceClient {
     readonly ollama: { readonly ready: boolean; readonly model: string; readonly error: string | null };
   }>;
   transcribe(audio: Blob, context: TranscriptionContext): Promise<readonly LocalSegment[]>;
-  translate(text: string, signal?: AbortSignal): Promise<{ readonly text: string; readonly elapsedMs: number }>;
+  translate(text: string, context: readonly TranslationContextTurn[], signal?: AbortSignal): Promise<{ readonly text: string; readonly elapsedMs: number }>;
   summarize(transcript: string): Promise<string>;
 }
 
@@ -47,6 +52,14 @@ const ollamaResponseSchema = z.object({ message: z.object({ content: z.string() 
 const ollamaTagsSchema = z.object({ models: z.array(z.object({ name: z.string() })) });
 const koreanSchema = z.object({ ko: z.string().trim().min(1) });
 const markdownSchema = z.object({ markdown: z.string().trim().min(1) });
+type TranslationRegister = 'polite' | 'plain' | 'preserve';
+
+function translationRegister(text: string): TranslationRegister {
+  const normalized = text.trim();
+  if (/(?:です|ます|ました|ません|でしょう|ください|ございます|いたします)(?:か)?[。！？?]?$/.test(normalized)) return 'polite';
+  if (/[?？]$/.test(normalized)) return 'plain';
+  return 'preserve';
+}
 
 class SerialQueue {
   #tail: Promise<void> = Promise.resolve();
@@ -154,7 +167,7 @@ export class LocalInference implements InferenceClient {
       let translation: string | null = null;
       let translationError: string | null = null;
       if (context.interpret && context.language === 'ja') {
-        try { translation = await this.#ollamaQueue.run(() => this.#translateDirect(sourceText, context.signal), context.signal); } catch (error) {
+        try { translation = await this.#ollamaQueue.run(() => this.#translateDirect(sourceText, [], context.signal), context.signal); } catch (error) {
           if (context.signal?.aborted === true) throw abortReason(context.signal);
           translationError = error instanceof Error ? error.message : 'Translation failed';
         }
@@ -176,9 +189,9 @@ export class LocalInference implements InferenceClient {
     return segments;
   }
 
-  async translate(text: string, signal?: AbortSignal) {
+  async translate(text: string, context: readonly TranslationContextTurn[] = [], signal?: AbortSignal) {
     const startedAt = performance.now();
-    const translated = await this.#ollamaQueue.run(() => this.#translateDirect(text, signal), signal);
+    const translated = await this.#ollamaQueue.run(() => this.#translateDirect(text, context, signal), signal);
     return translationSchema.parse({ text: translated, elapsedMs: performance.now() - startedAt });
   }
 
@@ -193,10 +206,14 @@ export class LocalInference implements InferenceClient {
     });
   }
 
-  async #translateDirect(text: string, signal?: AbortSignal): Promise<string> {
+  async #translateDirect(
+    text: string,
+    context: readonly TranslationContextTurn[] = [],
+    signal?: AbortSignal,
+  ): Promise<string> {
     const content = await this.#ollama(
-      '일본어 발언을 자연스럽고 충실한 한국어로 번역하세요. 통역 전문 용어는 정확히 옮기고 同時通訳는 동시통역으로 번역하세요. 고유명사는 임의로 음역하거나 바꾸지 말고, 불확실하면 원문을 보존하세요. 설명이나 추측을 추가하지 마세요.',
-      text,
+      '일본어 발언의 현재 문장만 자연스럽고 충실한 한국어로 통역하세요. targetRegister가 plain이면 반드시 비격식체로, polite이면 반드시 존댓말로, preserve이면 원문의 말투를 그대로 옮기세요. 이전 문맥은 호칭, 어조, 생략된 주어와 용어를 일관되게 해석하는 데만 사용하고 번역문에 반복하지 마세요. 질문, 확신, 완곡함을 유지하세요. 문장이 덜 끝났다면 내용을 추측해 완성하지 마세요. 통역 전문 용어는 정확히 옮기고 同時通訳는 동시통역으로 번역하세요. 고유명사는 임의로 음역하거나 바꾸지 말고, 불확실하면 원문을 보존하세요. 설명이나 추측을 추가하지 마세요.',
+      JSON.stringify({ context, targetRegister: translationRegister(text), current: text }),
       { type: 'object', properties: { ko: { type: 'string' } }, required: ['ko'] },
       signal,
     );

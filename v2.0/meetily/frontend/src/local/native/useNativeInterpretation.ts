@@ -35,7 +35,7 @@ export function useNativeInterpretation(options: InterpretationOptions) {
 
   if (queueRef.current === null) {
     queueRef.current = new InterpretationQueue(
-      async (text, signal) => ({ text: (await requestTranslation(text, signal)).text }),
+      async ({ text, context }, signal) => ({ text: (await requestTranslation(text, context, signal)).text }),
       setSnapshot,
     );
   }

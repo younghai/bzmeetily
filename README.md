@@ -2,7 +2,7 @@
 
 Meetily2 is a local-first AI meeting assistant for Apple Silicon Macs. It offers two separate workflows: live Japanese-to-Korean interpretation, and meeting recording, transcription, and Korean summaries. The desktop app also serves a browser interface at `http://127.0.0.1:3118/` on the same Mac.
 
-> **Release status (24 September 2026):** This repository contains source code and an ad-hoc development build workflow, not an approved public installer. The packaged app's computer-audio-only path previously produced no transcript, mixed-input accuracy still needs validation, and Developer ID signing, notarization, and a clean-Mac test are outstanding. See [review status](reviews/STATE.md) and the [DMG audit](v2.0/docs/distribution-dmg.md) before relying on a build for a meeting.
+> **Release status (24 September 2026):** The `2.0.2-rc.1` DMG is an ad-hoc development candidate, not an approved public installer. The current app has been exercised with computer audio, microphone, and both sources on the build Mac; mixed-input accuracy, long-session memory use, Developer ID signing, notarization, and a clean-Mac test remain release gates. See [review status](reviews/STATE.md) and the [DMG audit](v2.0/docs/distribution-dmg.md) before relying on a build for a meeting.
 
 ## What it does
 
@@ -11,7 +11,7 @@ Meetily2 is a local-first AI meeting assistant for Apple Silicon Macs. It offers
 | Live interpretation | Select **Live interpretation**, choose microphone, computer audio, or both, then start. Japanese transcription appears on the left and Korean interpretation on the right. A timeline retains earlier dialogue on screen. | Live captions are not automatically saved as a meeting. The desktop view offers copy and text export. |
 | Meeting recording | Select **Meeting recording**, create a meeting or import an audio file, review the transcript, and generate a Korean summary. | Meeting records and imported audio are stored locally for later review. |
 
-The app asks you to choose a workflow before it starts listening. Live interpretation processes incoming audio in short, contextual chunks; it does not wait for a completed recording. The recording workflow supports Japanese, Korean, and English source language choices, with Japanese-to-Korean interpretation when selected.
+The app asks you to choose a workflow before it starts listening. Live interpretation processes incoming audio in short, contextual chunks; it does not wait for a completed recording. Each recognized turn remains accessible in the timeline. Translation uses the two preceding completed Japanese/Korean turns to keep terms and address consistent, while aiming to preserve the current speaker's level of formality. The recording workflow supports Japanese, Korean, and English source language choices, with Japanese-to-Korean interpretation when selected.
 
 ## How it works
 
@@ -45,7 +45,7 @@ The first-run wizard downloads Whisper large-v3-turbo (about 1.6 GB) and `qwen3.
 
 ### Install an app bundle
 
-There is no generally approved, signed Meetily2 DMG in this repository yet. If you have a development DMG from a trusted build, open it, drag `Meetily2.app` to **Applications**, and launch the app. An ad-hoc build can trigger a Gatekeeper warning; it has not passed the clean-Mac release checks. Do not treat an older `2.0.0` or `2.0.1` DMG as containing later repository changes.
+There is no generally approved, signed Meetily2 DMG in this repository yet. The [2.0.2 RC1 GitHub prerelease](https://github.com/younghai/bzmeetily/releases/tag/v2.0.2-rc.1) is a development candidate for a trusted test Mac. Open its DMG, drag `Meetily2.app` to **Applications**, and launch the app. An ad-hoc build can trigger a Gatekeeper warning; it has not passed the clean-Mac release checks. Do not treat an older `2.0.0` or `2.0.1` DMG as containing later repository changes.
 
 On first launch:
 
@@ -77,7 +77,7 @@ cd ..
 scripts/build-dmg.sh
 ```
 
-The build script prepares the other bundled engines, builds the static UI and Tauri app, and writes `v2.0/release/Meetily2_<version>_aarch64.dmg` with a SHA-256 file and release notes. It **overwrites an existing DMG with the same version**, so use a fresh clone or preserve that file first. This default build is ad-hoc signed and is for development only.
+The build script prepares the other bundled engines, builds the static UI and Tauri app, and writes `v2.0/release/Meetily2_<version>_aarch64.dmg` with a SHA-256 file and release notes. It refuses to overwrite an existing DMG with the same version. This default build is ad-hoc signed and is for development only.
 
 `scripts/build-dmg.sh --dist` is the separate Developer ID signing and notarization route; it needs Apple signing credentials and must still pass the [clean-Mac checklist](v2.0/docs/clean-mac-checklist.md). The script alone does not establish release readiness.
 
@@ -115,7 +115,7 @@ Generated binaries, models, DMGs, private audio, databases, and secrets are excl
 
 ## Current limitations
 
-- General distribution remains blocked while native computer-audio capture, mixed-input accuracy, long-session memory use, signing/notarization, and clean-Mac installation are being checked.
+- General distribution remains blocked while mixed-input accuracy, long-session memory use, signing/notarization, and clean-Mac installation are being checked. Local system-audio capture worked in the build-Mac smoke test, but it is not a substitute for clean-Mac validation.
 - Apple Silicon macOS is the current packaging target; an Intel or Windows installer is not provided by this project.
 - Ports `3118`, `8178`, and `11434` must be available or occupied only by compatible local services. Another Meetily installation or local development service can cause a conflict.
 - Local speech recognition and translation are model outputs; review important transcripts and summaries before relying on them.

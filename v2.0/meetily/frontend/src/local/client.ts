@@ -11,7 +11,7 @@ import {
   translationRequestSchema,
   translationSchema,
 } from './contracts';
-import type { MeetingDetail, ServiceStatus, SourceLanguage } from './contracts';
+import type { MeetingDetail, ServiceStatus, SourceLanguage, TranslationContextTurn } from './contracts';
 import type { AudioChunk } from './audio';
 
 const meetingsSchema = z.array(meetingSchema);
@@ -189,8 +189,12 @@ export async function getMeetingAudio(id: string): Promise<Blob> {
   return z.instanceof(Blob).parse(blob);
 }
 
-export function requestTranslation(text: string, signal?: AbortSignal) {
-  const body = translationRequestSchema.parse({ text, sourceLanguage: 'ja', targetLanguage: 'ko' });
+export function requestTranslation(
+  text: string,
+  context: readonly TranslationContextTurn[] = [],
+  signal?: AbortSignal,
+) {
+  const body = translationRequestSchema.parse({ text, sourceLanguage: 'ja', targetLanguage: 'ko', context });
   return requestLiveJson('/translate', translationSchema, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

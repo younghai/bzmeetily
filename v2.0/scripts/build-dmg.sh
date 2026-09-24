@@ -42,6 +42,8 @@ command -v cmake >/dev/null 2>&1 || fail "cmake is required to build whisper.cpp
 
 VERSION=$(python3 -c "import json;print(json.load(open('$SRC_TAURI/tauri.conf.json'))['version'])")
 PRODUCT_NAME=$(python3 -c "import json;print(json.load(open('$SRC_TAURI/tauri.conf.json'))['productName'])")
+FINAL_DMG="$RELEASE_DIR/${PRODUCT_NAME}_${VERSION}_aarch64.dmg"
+[[ ! -e "$FINAL_DMG" ]] || fail "release artifact already exists: $FINAL_DMG"
 say "Meetily2 v$VERSION ($MODE mode)"
 
 # 1. Vendors (sidecar binaries + resources)
@@ -113,10 +115,9 @@ if [[ "$MODE" == "dist" ]]; then
   rm -rf "$STAGING" && mkdir -p "$STAGING"
   cp -R "$APP_PATH" "$STAGING/"
   ln -s /Applications "$STAGING/Applications"
-  FINAL_DMG="$RELEASE_DIR/${PRODUCT_NAME}_${VERSION}_aarch64.dmg"
-  rm -f "$FINAL_DMG"
+  [[ ! -e "$FINAL_DMG" ]] || fail "release artifact already exists: $FINAL_DMG"
   hdiutil create -volname "$PRODUCT_NAME $VERSION" -srcfolder "$STAGING" \
-    -ov -format UDZO "$FINAL_DMG"
+    -format UDZO "$FINAL_DMG"
   rm -rf "$STAGING"
 
   if [[ -n "${APPLE_ID:-}" && -n "${APPLE_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" ]]; then
@@ -131,10 +132,9 @@ else
   rm -rf "$STAGING" && mkdir -p "$STAGING"
   cp -R "$APP_PATH" "$STAGING/"
   ln -s /Applications "$STAGING/Applications"
-  FINAL_DMG="$RELEASE_DIR/${PRODUCT_NAME}_${VERSION}_aarch64.dmg"
-  rm -f "$FINAL_DMG"
+  [[ ! -e "$FINAL_DMG" ]] || fail "release artifact already exists: $FINAL_DMG"
   hdiutil create -volname "$PRODUCT_NAME $VERSION" -srcfolder "$STAGING" \
-    -ov -format UDZO "$FINAL_DMG"
+    -format UDZO "$FINAL_DMG"
   rm -rf "$STAGING"
 fi
 

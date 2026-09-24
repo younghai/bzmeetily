@@ -1,5 +1,12 @@
+import type { TranslationContextTurn } from '../contracts';
+
 export type TranslationResult = {
   readonly text: string;
+};
+
+export type TranslationRequest = {
+  readonly text: string;
+  readonly context: readonly TranslationContextTurn[];
 };
 
 export type CaptionSource = {
@@ -19,10 +26,11 @@ export type InterpretationSnapshot = {
   readonly pending: number;
 };
 
-type Translator = (text: string, signal: AbortSignal) => Promise<TranslationResult>;
+type Translator = (request: TranslationRequest, signal: AbortSignal) => Promise<TranslationResult>;
 type SnapshotListener = (snapshot: InterpretationSnapshot) => void;
 
 const MAX_PENDING_CAPTIONS = 12;
+const MAX_CONTEXT_TURNS = 2;
 const QUEUE_FULL_MESSAGE = '통역 대기열이 가득 찼습니다. 이 원문은 다시 시도해 주세요.';
 const LOCAL_SERVER_MESSAGE = '로컬 통역 서버(127.0.0.1:3118)에 연결할 수 없습니다. 서버 실행 상태를 확인하세요.';
 
@@ -81,14 +89,14 @@ export class InterpretationQueue {
     const isPending = current.status === 'pending';
     if (!isPending && this.snapshot().pending >= MAX_PENDING_CAPTIONS) {
       this.items = this.items.map((item) => item.id === source.id
-        ? { ...item, ...source, error: QUEUE_FULL_MESSAGE, status: 'error' }
+        ? { ...item, ...source, translation: null, error: QUEUE_FULL_MESSAGE, status: 'error' }
         : item);
       this.emit();
       return false;
     }
 
     this.items = this.items.map((item) => item.id === source.id
-      ? { ...item, ...source, error: null, status: 'pending' }
+      ? { ...item, ...source, translation: null, error: null, status: 'pending' }
       : item);
     if (this.active?.id === source.id) {
       this.generation += 1;
@@ -157,7 +165,14 @@ export class InterpretationQueue {
     const controller = new AbortController();
     this.active = { id, controller, generation };
     try {
-      const result = await this.translator(item.sourceText, controller.signal);
+      const itemIndex = this.items.findIndex((candidate) => candidate.id === id);
+      const context = this.items
+        .slice(0, itemIndex)
+        .filter((candidate): candidate is InterpretationItem & { readonly translation: string } =>
+          candidate.status === 'translated' && candidate.translation !== null)
+        .slice(-MAX_CONTEXT_TURNS)
+        .map((candidate) => ({ sourceText: candidate.sourceText, translation: candidate.translation }));
+      const result = await this.translator({ text: item.sourceText, context }, controller.signal);
       if (!this.isCurrent(id, generation)) return;
       this.items = this.items.map((candidate) => candidate.id === id
         ? { ...candidate, translation: result.text, error: null, status: 'translated' }

@@ -1,7 +1,7 @@
 'use client';
 
 import { LoaderCircle, X } from 'lucide-react';
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
 import { JapaneseText } from './JapaneseText';
@@ -27,9 +27,7 @@ export type InterpretationViewProps = {
 };
 
 export function groupInterpretationItems(items: readonly InterpretationViewItem[]): readonly (readonly InterpretationViewItem[])[] {
-  const groups: InterpretationViewItem[][] = [];
-  for (let index = 0; index < items.length; index += 6) groups.push(items.slice(index, index + 6));
-  return groups;
+  return items.map((item) => [item]);
 }
 
 function formatTimestamp(timestamp: string | number | undefined): string | null {
@@ -48,6 +46,7 @@ export function InterpretationView({ open, items, pending = false, onClose, onRe
   const followJapaneseRef = useRef(true);
   const followKoreanRef = useRef(true);
   const followTimelineRef = useRef(true);
+  const [selectedConversation, setSelectedConversation] = useState<number | null>(null);
   const groups = groupInterpretationItems(items);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -59,6 +58,7 @@ export function InterpretationView({ open, items, pending = false, onClose, onRe
     followJapaneseRef.current = true;
     followKoreanRef.current = true;
     followTimelineRef.current = true;
+    setSelectedConversation(null);
     const previousFocus = document.activeElement;
     closeRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -100,6 +100,7 @@ export function InterpretationView({ open, items, pending = false, onClose, onRe
   }, [open, items, pending]);
 
   const showConversation = (index: number): void => {
+    setSelectedConversation(index);
     followJapaneseRef.current = false;
     followKoreanRef.current = false;
     followTimelineRef.current = false;
@@ -112,6 +113,7 @@ export function InterpretationView({ open, items, pending = false, onClose, onRe
   };
 
   const showLatestConversation = (): void => {
+    setSelectedConversation(null);
     followJapaneseRef.current = true;
     followKoreanRef.current = true;
     followTimelineRef.current = true;
@@ -119,6 +121,11 @@ export function InterpretationView({ open, items, pending = false, onClose, onRe
       if (pane) pane.scrollTo({ top: pane.scrollHeight, behavior: 'smooth' });
     }
     if (timelineRef.current) timelineRef.current.scrollLeft = timelineRef.current.scrollWidth;
+  };
+
+  const showFirstConversation = (): void => {
+    showConversation(0);
+    if (timelineRef.current) timelineRef.current.scrollLeft = 0;
   };
 
   if (!open) return null;
@@ -160,7 +167,8 @@ export function InterpretationView({ open, items, pending = false, onClose, onRe
 
         {groups.length > 0 && (
           <nav aria-label="대화 타임라인" className="flex shrink-0 items-center gap-3 border-b border-slate-200 bg-slate-50 px-4 py-2 sm:px-6">
-            <span className="shrink-0 text-xs font-semibold text-slate-600">이전 대화</span>
+            <span className="shrink-0 text-xs font-semibold text-slate-600">대화 타임라인 · {groups.length}개</span>
+            <button type="button" onClick={showFirstConversation} className="min-h-11 shrink-0 rounded-lg border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 outline-none hover:bg-slate-100 focus-visible:ring-2 focus-visible:ring-blue-500">처음 대화</button>
             <ol
               ref={timelineRef}
               onScroll={(event) => {
@@ -175,11 +183,12 @@ export function InterpretationView({ open, items, pending = false, onClose, onRe
                     type="button"
                     onClick={() => showConversation(index)}
                     aria-label={`${formatTimestamp(group[0].timestamp) ?? `${index + 1}번째`} 대화 보기`}
-                    className="flex min-h-11 w-44 flex-col items-start rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-left outline-none hover:border-blue-400 focus-visible:ring-2 focus-visible:ring-blue-500"
+                    aria-pressed={selectedConversation === index}
+                    className={`flex min-h-20 w-56 flex-col items-start rounded-lg border px-3 py-1.5 text-left outline-none hover:border-blue-400 focus-visible:ring-2 focus-visible:ring-blue-500 ${selectedConversation === index ? 'border-blue-500 bg-blue-50' : 'border-slate-200 bg-white'}`}
                   >
                     <span className="text-xs tabular-nums text-blue-700">{formatTimestamp(group[0].timestamp) ?? `${index + 1}번째`}</span>
-                    <span lang="ja" className="w-full truncate text-xs text-slate-700">{group.map((item) => item.sourceText).join('')}</span>
-                    <span lang="ko" className="w-full truncate text-xs text-slate-500">{group.map((item) => item.translation ?? '').filter(Boolean).join(' ') || '통역 중'}</span>
+                    <span lang="ja" className="line-clamp-2 w-full break-words text-xs text-slate-700">{group.map((item) => item.sourceText).join('')}</span>
+                    <span lang="ko" className="line-clamp-2 w-full break-words text-xs text-slate-500">{group.map((item) => item.translation ?? '').filter(Boolean).join(' ') || '통역 중'}</span>
                   </button>
                 </li>
               ))}

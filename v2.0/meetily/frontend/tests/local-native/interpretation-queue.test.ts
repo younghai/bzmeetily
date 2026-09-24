@@ -36,7 +36,7 @@ describe('native interpretation queue', () => {
     // Given
     const first = deferred<TranslationResult>();
     const started: string[] = [];
-    const queue = new InterpretationQueue(async (text) => {
+    const queue = new InterpretationQueue(async ({ text }) => {
       started.push(text);
       if (text === '一番') return first.promise;
       return { text: '둘째' };
@@ -58,11 +58,39 @@ describe('native interpretation queue', () => {
     ]);
   });
 
+  test('uses prior translated turns as bounded context for the next caption', async () => {
+    // Given
+    const requests: Array<{
+      readonly text: string;
+      readonly context: readonly { readonly sourceText: string; readonly translation: string }[];
+    }> = [];
+    const queue = new InterpretationQueue(async (request) => {
+      requests.push(request);
+      return { text: `번역 ${requests.length}` };
+    });
+    queue.enqueue(source('1', '本日はありがとうございます。'));
+    queue.enqueue(source('2', 'それでは始めさせていただきます。'));
+    queue.enqueue(source('3', 'まず前回の結果をご説明します。'));
+    queue.enqueue(source('4', 'この点について、どうお考えでしょうか。'));
+
+    // When
+    await queue.waitForIdle();
+
+    // Then
+    expect(requests[3]).toEqual({
+      text: 'この点について、どうお考えでしょうか。',
+      context: [
+        { sourceText: 'それでは始めさせていただきます。', translation: '번역 2' },
+        { sourceText: 'まず前回の結果をご説明します。', translation: '번역 3' },
+      ],
+    });
+  });
+
   test('reset aborts the active request and ignores its late result', async () => {
     // Given
     const late = deferred<TranslationResult>();
     let requestSignal: AbortSignal | undefined;
-    const queue = new InterpretationQueue(async (_text, signal) => {
+    const queue = new InterpretationQueue(async (_request, signal) => {
       requestSignal = signal;
       return late.promise;
     });
@@ -83,7 +111,7 @@ describe('native interpretation queue', () => {
     // Given
     const first = deferred<TranslationResult>();
     let firstSignal: AbortSignal | undefined;
-    const queue = new InterpretationQueue(async (text, signal) => {
+    const queue = new InterpretationQueue(async ({ text }, signal) => {
       if (text === '最初') {
         firstSignal = signal;
         return first.promise;
@@ -141,7 +169,7 @@ describe('native interpretation queue', () => {
     const newTranslation = deferred<TranslationResult>();
     const requested: string[] = [];
     let oldSignal: AbortSignal | undefined;
-    const queue = new InterpretationQueue(async (text, signal) => {
+    const queue = new InterpretationQueue(async ({ text }, signal) => {
       requested.push(text);
       if (text === '古い途中') {
         oldSignal = signal;
@@ -175,7 +203,7 @@ describe('native interpretation queue', () => {
     const active = deferred<TranslationResult>();
     const requested: string[] = [];
     let activeSignal: AbortSignal | undefined;
-    const queue = new InterpretationQueue(async (text, signal) => {
+    const queue = new InterpretationQueue(async ({ text }, signal) => {
       requested.push(text);
       if (text === '一番') {
         activeSignal = signal;
@@ -198,11 +226,11 @@ describe('native interpretation queue', () => {
     expect(queue.snapshot().items.map((item) => item.sourceText)).toEqual(['一番', '二番の最新版']);
   });
 
-  test('keeps a successful translation visible while a changed revision is pending', async () => {
+  test('clears a stale translation while a changed source revision is pending', async () => {
     // Given
     const revision = deferred<TranslationResult>();
     const requested: string[] = [];
-    const queue = new InterpretationQueue(async (text) => {
+    const queue = new InterpretationQueue(async ({ text }) => {
       requested.push(text);
       if (text === '確定した全文') return revision.promise;
       return { text: '기존 번역' };
@@ -218,7 +246,7 @@ describe('native interpretation queue', () => {
     // Then
     expect(queue.snapshot().items[0]).toMatchObject({
       sourceText: '確定した全文',
-      translation: '기존 번역',
+      translation: null,
       status: 'pending',
     });
     expect(requested).toEqual(['短い文', '確定した全文']);

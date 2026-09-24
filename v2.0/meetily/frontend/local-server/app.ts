@@ -91,7 +91,7 @@ async function routeApi(
   }
   if (url.pathname === '/api/local/translate' && request.method === 'POST') {
     const input = translationRequestSchema.parse(await readJson(request, 32 * 1024));
-    return json(await options.inference.translate(input.text, request.signal));
+    return json(await options.inference.translate(input.text, input.context, request.signal));
   }
   if (url.pathname === '/api/local/transcribe' && request.method === 'POST') {
     if (request.headers.get('content-type')?.split(';')[0] !== 'audio/wav') throw new LocalServerError('UNSUPPORTED_MEDIA', 415, 'Expected audio/wav');
