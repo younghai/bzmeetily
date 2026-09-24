@@ -72,12 +72,32 @@ cp -R out "$SRC_TAURI/resources/web-static"
 say "Step 3/5 — Tauri release build (this can take a while)"
 cd "$V2_ROOT/meetily/frontend"
 PATH="$V2_ROOT/meetily/frontend/scripts/native-build-support:$PATH" \
+  RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }--remap-path-prefix=$HOME=/build-home --cfg meetily_public_bundle" \
+  CFLAGS="${CFLAGS:+$CFLAGS }-ffile-prefix-map=$HOME=/build-home" \
+  CXXFLAGS="${CXXFLAGS:+$CXXFLAGS }-ffile-prefix-map=$HOME=/build-home" \
+  CMAKE_C_FLAGS="${CMAKE_C_FLAGS:+$CMAKE_C_FLAGS }-ffile-prefix-map=$HOME=/build-home" \
+  CMAKE_CXX_FLAGS="${CMAKE_CXX_FLAGS:+$CMAKE_CXX_FLAGS }-ffile-prefix-map=$HOME=/build-home" \
   pnpm tauri build --bundles app
 
 # Cargo workspace puts bundle output under the workspace-root target dir.
 APP_PATH="$V2_ROOT/meetily/target/release/bundle/macos/$PRODUCT_NAME.app"
 DMG_PATH="$V2_ROOT/meetily/target/release/bundle/dmg/${PRODUCT_NAME}_${VERSION}_aarch64.dmg"
 [[ -d "$APP_PATH" ]] || fail "app bundle missing: $APP_PATH"
+
+# Rust panic locations can otherwise embed the build user's home directory.
+# Keep private build paths out of publicly shared candidate binaries.
+python3 - "$APP_PATH" "$HOME" <<'PY'
+from pathlib import Path
+import sys
+
+bundle = Path(sys.argv[1])
+home = (sys.argv[2] + "/").encode()
+leaks = [str(path.relative_to(bundle)) for path in bundle.rglob("*")
+         if path.is_file() and not path.is_symlink() and home in path.read_bytes()]
+if leaks:
+    print("ERROR: app bundle contains local build paths: " + ", ".join(leaks), file=sys.stderr)
+    raise SystemExit(1)
+PY
 
 mkdir -p "$RELEASE_DIR"
 
