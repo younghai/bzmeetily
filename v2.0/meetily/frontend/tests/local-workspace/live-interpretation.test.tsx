@@ -97,6 +97,18 @@ afterAll(() => {
 });
 
 describe('browser live interpretation', () => {
+  test('shows a native capture rejection string instead of a generic failure', async () => {
+    startCapture.mockImplementationOnce(async () => {
+      throw '컴퓨터 소리 장치가 응답하지 않습니다.';
+    });
+    await act(async () => { renderer = create(<Probe />); });
+
+    await act(async () => { await liveState?.start(); });
+
+    expect(liveState?.phase).toBe('error');
+    expect(liveState?.error).toBe('컴퓨터 소리 장치가 응답하지 않습니다.');
+  });
+
   test('stays inert until start and exposes Japanese before Korean translation finishes', async () => {
     // Given
     await act(async () => { renderer = create(<StrictMode><Probe /></StrictMode>); });

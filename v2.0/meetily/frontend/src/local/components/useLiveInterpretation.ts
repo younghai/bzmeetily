@@ -22,6 +22,7 @@ const ASR_FAILURE_MESSAGE = '일본어 음성 전사에 실패했습니다.';
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) return error.message;
+  if (typeof error === 'string' && error.trim().length > 0) return error;
   return '실시간 통역을 완료하지 못했습니다.';
 }
 

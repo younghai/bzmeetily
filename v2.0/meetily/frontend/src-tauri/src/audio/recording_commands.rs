@@ -313,6 +313,21 @@ pub(crate) fn resolve_system_or_default(requested_name: Option<&str>) -> Option<
 /// Wake idle audio hardware before checking microphone callbacks, and finish
 /// validation before creating any recording resources.
 #[cfg(target_os = "macos")]
+async fn verify_microphone_with_deadline<F>(
+    check: F,
+    deadline: std::time::Duration,
+) -> Result<(), String>
+where
+    F: std::future::Future<Output = anyhow::Result<()>>,
+{
+    match tokio::time::timeout(deadline, check).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(format!("Microphone access required: {error}")),
+        Err(_) => Err("마이크 장치 응답이 지연되어 시작을 중단했습니다. 입력 장치를 다시 연결하거나 컴퓨터 소리만 선택해 다시 시도하세요.".to_string()),
+    }
+}
+
+#[cfg(target_os = "macos")]
 pub(crate) async fn prepare_audio_for_recording(
     system_device: Option<&super::AudioDevice>,
     verify_microphone: bool,
@@ -327,18 +342,39 @@ pub(crate) async fn prepare_audio_for_recording(
                 .and_then(|d| d.name().ok())
         });
     if let Some(name) = wake_name {
-        if let Err(e) = super::recording_manager::wake_audio_connection(&name).await {
+        if let Err(e) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            super::recording_manager::wake_audio_connection(&name),
+        ).await.unwrap_or_else(|_| Err(anyhow::anyhow!("audio device wake timed out"))) {
             warn!("[AUDIO_WAKE] Wake failed: {} — proceeding anyway", e);
         }
     }
 
     if verify_microphone {
-        if let Err(e) = super::devices::verify_microphone_access().await {
+        if let Err(e) = verify_microphone_with_deadline(
+            super::devices::verify_microphone_access(),
+            std::time::Duration::from_secs(12),
+        ).await {
             error!("Microphone access verification failed: {}", e);
-            return Err(format!("Microphone access required: {}", e));
+            return Err(e);
         }
     }
     Ok(())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod microphone_preflight_tests {
+    use super::verify_microphone_with_deadline;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn stalled_core_audio_probe_returns_an_error() {
+        let stalled = std::future::pending::<anyhow::Result<()>>();
+        let error = verify_microphone_with_deadline(stalled, Duration::from_millis(1))
+            .await
+            .unwrap_err();
+        assert!(error.contains("마이크 장치 응답이 지연"));
+    }
 }
 
 // ============================================================================

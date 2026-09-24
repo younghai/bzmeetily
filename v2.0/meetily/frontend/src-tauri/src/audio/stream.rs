@@ -1,4 +1,6 @@
 use std::sync::Arc;
+#[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{Device, Stream, SupportedStreamConfig};
@@ -12,6 +14,33 @@ use super::capture::{AudioCaptureBackend, get_current_backend};
 
 #[cfg(target_os = "macos")]
 use super::capture::CoreAudioCapture;
+
+#[cfg(target_os = "macos")]
+static CORE_AUDIO_STARTING: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "macos")]
+async fn initialize_core_audio() -> Result<super::capture::CoreAudioStream> {
+    if CORE_AUDIO_STARTING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        anyhow::bail!("이전 컴퓨터 소리 장치 초기화가 아직 끝나지 않았습니다. Meetily2를 다시 실행한 뒤 시도하세요.");
+    }
+
+    let initialization = tokio::task::spawn_blocking(|| {
+        struct ResetStarting;
+        impl Drop for ResetStarting {
+            fn drop(&mut self) {
+                CORE_AUDIO_STARTING.store(false, Ordering::SeqCst);
+            }
+        }
+        let _reset = ResetStarting;
+        CoreAudioCapture::new()?.stream()
+    });
+
+    match tokio::time::timeout(std::time::Duration::from_secs(15), initialization).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => Err(anyhow::anyhow!("컴퓨터 소리 초기화 작업에 실패했습니다: {error}")),
+        Err(_) => Err(anyhow::anyhow!("컴퓨터 소리 장치가 15초 동안 응답하지 않아 시작을 중단했습니다. 출력 장치를 확인하고 Meetily2를 다시 실행하세요.")),
+    }
+}
 
 /// Stream backend implementation
 pub enum StreamBackend {
@@ -150,20 +179,10 @@ impl AudioStream {
     ) -> Result<Self> {
         info!("🔊 Stream: Creating Core Audio stream for device: {}", device.name);
 
-        // Create Core Audio capture
-        info!("🔊 Stream: Calling CoreAudioCapture::new()...");
-        let capture_impl = CoreAudioCapture::new()
-            .map_err(|e| {
-                error!("❌ Stream: CoreAudioCapture::new() failed: {}", e);
-                anyhow::anyhow!("Failed to create Core Audio capture: {}", e)
-            })?;
-
-        info!("✅ Stream: CoreAudioCapture created, calling stream()...");
-        let core_stream = capture_impl.stream()
-            .map_err(|e| {
-                error!("❌ Stream: capture_impl.stream() failed: {}", e);
-                anyhow::anyhow!("Failed to create Core Audio stream: {}", e)
-            })?;
+        let core_stream = initialize_core_audio().await.map_err(|error| {
+            error!("❌ Stream: Core Audio initialization failed: {error}");
+            error
+        })?;
 
         let sample_rate = core_stream.sample_rate();
         info!("✅ Stream: Core Audio stream created with sample rate: {} Hz", sample_rate);
@@ -377,6 +396,7 @@ impl AudioStreamManager {
         microphone_device: Option<Arc<AudioDevice>>,
         system_device: Option<Arc<AudioDevice>>,
         recording_sender: Option<mpsc::UnboundedSender<super::recording_state::AudioChunk>>,
+        require_system_audio: bool,
     ) -> Result<()> {
         use super::capture::get_current_backend;
         let backend = get_current_backend();
@@ -411,7 +431,9 @@ impl AudioStreamManager {
                 }
                 Err(e) => {
                     warn!("⚠️ Failed to create system audio stream: {}", e);
-                    // Don't fail if only system audio fails
+                    if require_system_audio {
+                        return Err(e);
+                    }
                 }
             }
         } else {
