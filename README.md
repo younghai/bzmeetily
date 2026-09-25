@@ -132,6 +132,7 @@ Hardware-dependent Rust capture tests are ignored by default and must be run del
 | [`v2.0/meetily/frontend/local-server/`](v2.0/meetily/frontend/local-server/) | Loopback API and local meeting database access |
 | [`v2.0/scripts/`](v2.0/scripts/) | Vendor preparation, DMG build, and smoke test |
 | [`v2.0/docs/`](v2.0/docs/) | Distribution audit and clean-Mac checklist |
+| [`docs/waterfall/`](docs/waterfall/README.md) | Korean waterfall documentation: planning, requirements, design, implementation, testing, deployment, and operations |
 | [`reviews/`](reviews/) | Three-pass test evidence and release decision |
 | [`skills/meetily2-release-cycle/`](skills/meetily2-release-cycle/) | Repeatable review workflow for this project |
 
