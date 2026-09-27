@@ -52,7 +52,7 @@ const server = Bun.serve({
   hostname: '127.0.0.1',
   port: config.port,
   idleTimeout: 0,
-  maxRequestBodySize: config.maxImportBytes + 1024 * 1024,
+  maxRequestBodySize: config.maxJobImportBytes + 1024 * 1024,
   fetch: createLocalApp({
     port: config.port,
     instanceId: config.instanceId,
@@ -61,6 +61,7 @@ const server = Bun.serve({
     staticDirectory: config.staticDirectory,
     maxChunkBytes: config.maxChunkBytes,
     maxImportBytes: config.maxImportBytes,
+    maxJobImportBytes: config.maxJobImportBytes,
     ffmpegPath: config.ffmpegPath,
     importTimeoutMs: config.importTimeoutMs,
   }),

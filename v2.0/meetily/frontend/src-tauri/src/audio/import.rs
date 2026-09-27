@@ -1,7 +1,7 @@
 // Audio file import module - allows importing external audio files as new meetings
 
 use crate::api::TranscriptSegment;
-use crate::audio::decoder::{decode_audio_file, decode_audio_file_with_progress};
+use crate::audio::decoder::{decode_audio_duration, decode_whisper_file_with_progress};
 use crate::audio::vad::get_speech_chunks_with_progress;
 use crate::config::{DEFAULT_WHISPER_MODEL, DEFAULT_PARAKEET_MODEL};
 use crate::parakeet_engine::ParakeetEngine;
@@ -21,6 +21,49 @@ use super::audio_processing::create_meeting_folder;
 use super::common::{create_transcript_segments, split_segment_at_silence, write_transcripts_json};
 use super::constants::AUDIO_EXTENSIONS;
 use super::recording_preferences::get_default_recordings_folder;
+
+struct ImportMetrics {
+    started: std::time::Instant,
+    stage_started: std::time::Instant,
+}
+
+impl ImportMetrics {
+    fn new() -> Self {
+        let started = std::time::Instant::now();
+        Self { started, stage_started: started }
+    }
+
+    fn stage(&mut self, name: &str) {
+        info!("import_metrics stage={} elapsed_ms={} process_peak_rss_bytes={:?}",
+            name, self.stage_started.elapsed().as_millis(), process_peak_rss_bytes());
+        self.stage_started = std::time::Instant::now();
+    }
+}
+
+impl Drop for ImportMetrics {
+    fn drop(&mut self) {
+        info!("import_metrics total_ms={} process_peak_rss_bytes={:?}",
+            self.started.elapsed().as_millis(), process_peak_rss_bytes());
+    }
+}
+
+// This is the process lifetime high-water mark, including models and other tasks.
+fn process_peak_rss_bytes() -> Option<u64> {
+    #[cfg(unix)]
+    {
+        let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
+        if unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        let bytes = unsafe { usage.assume_init() }.ru_maxrss as u64;
+        #[cfg(target_os = "macos")]
+        return Some(bytes);
+        #[cfg(not(target_os = "macos"))]
+        return Some(bytes * 1024);
+    }
+    #[cfg(not(unix))]
+    None
+}
 
 /// Global flag to track if import is in progress
 static IMPORT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
@@ -176,8 +219,7 @@ pub fn validate_audio_file(path: &Path) -> Result<AudioFileInfo> {
                 "Metadata extraction failed: {}, falling back to full decode",
                 e
             );
-            let decoded = decode_audio_file(path)?;
-            decoded.duration_seconds
+            decode_audio_duration(path)?
         }
     };
 
@@ -317,6 +359,7 @@ async fn run_import<R: Runtime>(
     model: Option<String>,
     provider: Option<String>,
 ) -> Result<ImportResult> {
+    let mut metrics = ImportMetrics::new();
     let source = PathBuf::from(&source_path);
 
     // Validate source file
@@ -363,6 +406,7 @@ async fn run_import<R: Runtime>(
         .map_err(|e| anyhow!("Failed to copy audio file: {}", e))?;
 
     info!("Copied audio to: {}", dest_path.display());
+    metrics.stage("copy");
 
     // Check for cancellation
     if IMPORT_CANCELLED.load(Ordering::SeqCst) {
@@ -381,27 +425,6 @@ async fn run_import<R: Runtime>(
         emit_progress(&app_for_decode, "decoding", overall_progress, msg);
     });
 
-    let path_for_decode = dest_path.clone();
-    let decoded = tokio::task::spawn_blocking(move || {
-        decode_audio_file_with_progress(&path_for_decode, Some(decode_progress))
-    })
-    .await
-    .map_err(|e| anyhow!("Decode task join error: {}", e))??;
-    let duration_seconds = decoded.duration_seconds;
-
-    info!(
-        "Decoded audio: {:.2}s, {}Hz, {} channels",
-        duration_seconds, decoded.sample_rate, decoded.channels
-    );
-
-    emit_progress(&app, "resampling", 20, "Converting audio format...");
-
-    // Check for cancellation
-    if IMPORT_CANCELLED.load(Ordering::SeqCst) {
-        let _ = std::fs::remove_dir_all(&meeting_folder);
-        return Err(anyhow!("Import cancelled"));
-    }
-
     // Convert to 16kHz mono format with progress updates
     let app_for_resample = app.clone();
     let resample_progress = Box::new(move |progress: u32, msg: &str| {
@@ -410,15 +433,25 @@ async fn run_import<R: Runtime>(
         emit_progress(&app_for_resample, "resampling", overall_progress, msg);
     });
 
-    let audio_samples = tokio::task::spawn_blocking(move || {
-        decoded.to_whisper_format_with_progress(Some(resample_progress))
+    let path_for_decode = dest_path.clone();
+    let decoded = tokio::task::spawn_blocking(move || {
+        decode_whisper_file_with_progress(
+            &path_for_decode,
+            Some(decode_progress),
+            Some(resample_progress),
+            || IMPORT_CANCELLED.load(Ordering::SeqCst),
+        )
     })
     .await
-    .map_err(|e| anyhow!("Resample task join error: {}", e))?;
-    info!(
-        "Converted to 16kHz mono format: {} samples",
-        audio_samples.len()
-    );
+    .map_err(|e| anyhow!("Decode/resample task join error: {}", e))?;
+    if IMPORT_CANCELLED.load(Ordering::SeqCst) {
+        let _ = std::fs::remove_dir_all(&meeting_folder);
+        return Err(anyhow!("Import cancelled"));
+    }
+    let decoded = decoded?;
+    let duration_seconds = decoded.duration_seconds;
+    let audio_samples = decoded.samples;
+    metrics.stage("decode_resample");
 
     emit_progress(&app, "vad", 25, "Detecting speech segments...");
 
@@ -454,6 +487,7 @@ async fn run_import<R: Runtime>(
     .map_err(|e| anyhow!("VAD task panicked: {}", e))?
     .map_err(|e| anyhow!("VAD processing failed: {}", e))?;
 
+    metrics.stage("vad");
     let total_segments = speech_segments.len();
     info!("VAD detected {} speech segments (redemption_time={}ms)", total_segments, VAD_REDEMPTION_TIME_MS);
 
@@ -526,7 +560,7 @@ async fn run_import<R: Runtime>(
     const MAX_SEGMENT_SAMPLES: usize = 25 * 16000; // 25 seconds at 16kHz
 
     let mut processable_segments: Vec<crate::audio::vad::SpeechSegment> = Vec::new();
-    for segment in &speech_segments {
+    for segment in speech_segments {
         if segment.samples.len() > MAX_SEGMENT_SAMPLES {
             debug!(
                 "Splitting large segment ({:.0}ms, {} samples) at silence boundaries",
@@ -534,11 +568,11 @@ async fn run_import<R: Runtime>(
                 segment.samples.len()
             );
 
-            let sub_segments = split_segment_at_silence(segment, MAX_SEGMENT_SAMPLES);
+            let sub_segments = split_segment_at_silence(&segment, MAX_SEGMENT_SAMPLES);
             debug!("Split into {} sub-segments", sub_segments.len());
             processable_segments.extend(sub_segments);
         } else {
-            processable_segments.push(segment.clone());
+            processable_segments.push(segment);
         }
     }
 
@@ -549,7 +583,8 @@ async fn run_import<R: Runtime>(
     let mut all_transcripts: Vec<(String, f64, f64)> = Vec::new();
     let mut total_confidence = 0.0f32;
 
-    for (i, segment) in processable_segments.iter().enumerate() {
+    metrics.stage("model_load_and_split");
+    for (i, segment) in processable_segments.into_iter().enumerate() {
         if IMPORT_CANCELLED.load(Ordering::SeqCst) {
             let _ = std::fs::remove_dir_all(&meeting_folder);
             return Err(anyhow!("Import cancelled"));
@@ -583,14 +618,14 @@ async fn run_import<R: Runtime>(
         let (text, conf) = if use_parakeet {
             let engine = parakeet_engine.as_ref().unwrap();
             let text = engine
-                .transcribe_audio(segment.samples.clone())
+                .transcribe_audio(segment.samples)
                 .await
                 .map_err(|e| anyhow!("Parakeet transcription failed on segment {}: {}", i, e))?;
             (text, 0.9f32)
         } else {
             let engine = whisper_engine.as_ref().unwrap();
             let (text, conf, _) = engine
-                .transcribe_audio_with_confidence(segment.samples.clone(), language.clone())
+                .transcribe_audio_with_confidence(segment.samples, language.clone())
                 .await
                 .map_err(|e| anyhow!("Whisper transcription failed on segment {}: {}", i, e))?;
             (text, conf)
@@ -603,6 +638,9 @@ async fn run_import<R: Runtime>(
                 i + 1, processable_count, segment_duration_sec, conf,
                 if trimmed.len() > 80 { let mut end = 80; while !trimmed.is_char_boundary(end) { end -= 1; } &trimmed[..end] } else { trimmed }
             );
+            if all_transcripts.is_empty() {
+                info!("import_metrics first_result_ms={}", metrics.started.elapsed().as_millis());
+            }
             all_transcripts.push((text, segment.start_timestamp_ms, segment.end_timestamp_ms));
             total_confidence += conf;
         } else {
@@ -610,6 +648,7 @@ async fn run_import<R: Runtime>(
         }
     }
 
+    metrics.stage("asr");
     let transcribed_count = all_transcripts.len();
     let avg_confidence = if transcribed_count > 0 {
         total_confidence / transcribed_count as f32
@@ -664,6 +703,7 @@ async fn run_import<R: Runtime>(
         warn!("Failed to write metadata.json: {}", e);
     }
 
+    metrics.stage("save");
     emit_progress(&app, "complete", 100, "Import complete");
 
     Ok(ImportResult {

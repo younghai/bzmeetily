@@ -20,6 +20,7 @@ const environmentSchema = z.object({
   MEETILY_INFERENCE_QUEUE_LIMIT: z.coerce.number().int().min(1).max(32).default(8),
   MEETILY_MAX_CHUNK_BYTES: z.coerce.number().int().positive().max(12 * 1024 * 1024).default(12 * 1024 * 1024),
   MEETILY_MAX_IMPORT_BYTES: z.coerce.number().int().positive().max(512 * 1024 * 1024).default(512 * 1024 * 1024),
+  MEETILY_MAX_JOB_IMPORT_BYTES: z.coerce.number().int().positive().max(1536 * 1024 * 1024).default(1536 * 1024 * 1024),
   // Identifies the data directory the owning app runs against, so a second
   // Meetily install can detect (and refuse to reuse) a server for other data.
   MEETILY_INSTANCE_ID: z.string().min(1).optional(),
@@ -48,5 +49,6 @@ export function loadConfig(environment: NodeJS.ProcessEnv) {
     bootstrapIfMissing: value.MEETILY_BOOTSTRAP_DB,
     maxChunkBytes: value.MEETILY_MAX_CHUNK_BYTES,
     maxImportBytes: value.MEETILY_MAX_IMPORT_BYTES,
+    maxJobImportBytes: value.MEETILY_MAX_JOB_IMPORT_BYTES,
   };
 }

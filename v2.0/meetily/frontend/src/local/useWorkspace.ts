@@ -7,11 +7,14 @@ import {
   generateSummary,
   getMeeting,
   getServiceStatus,
-  importMeeting,
+  getImportJob,
+  listImportJobs,
   listMeetings,
   renameMeeting,
+  retryImportJob,
+  startImportJob,
 } from './client';
-import type { LocalMeeting, LocalSegment, MeetingDetail, ServiceStatus, SourceLanguage } from './contracts';
+import type { ImportJob, LocalMeeting, LocalSegment, MeetingDetail, ServiceStatus, SourceLanguage } from './contracts';
 
 export type WorkspaceState = {
   readonly status: ServiceStatus | null;
@@ -21,6 +24,7 @@ export type WorkspaceState = {
   readonly busy: boolean;
   readonly operation: 'creating' | 'importing' | 'renaming' | 'summarizing' | null;
   readonly error: string | null;
+  readonly importJob: ImportJob | null;
 };
 
 function messageFor(error: unknown): string {
@@ -36,6 +40,7 @@ export function useWorkspace() {
     busy: false,
     operation: null,
     error: null,
+    importJob: null,
   });
   const requestGeneration = useRef(0);
   const readAbortRef = useRef<AbortController | null>(null);
@@ -70,14 +75,19 @@ export function useWorkspace() {
     readAbortRef.current = controller;
     setState((current) => ({ ...current, loading: true, error: null }));
     try {
-      const [status, meetings] = await Promise.all([
+      const [status, meetings, importJobs] = await Promise.all([
         getServiceStatus(controller.signal),
         listMeetings(controller.signal),
+        listImportJobs(),
       ]);
       if (generation !== requestGeneration.current) return;
-      const selected = meetings[0] ? await getMeeting(meetings[0].id, controller.signal) : null;
+      const importJob = importJobs.find((job) => job.state === 'queued' || job.state === 'processing' || job.state === 'failed') ?? null;
+      const selectedId = importJob?.meetingId ?? meetings[0]?.id;
+      const selected = selectedId ? await getMeeting(selectedId, controller.signal) : null;
       if (generation !== requestGeneration.current) return;
-      setState({ status, meetings, selected, loading: false, busy: false, operation: null, error: null });
+      setState({ status, meetings, selected, loading: false, busy: importJob?.state === 'queued' || importJob?.state === 'processing',
+        operation: importJob?.state === 'queued' || importJob?.state === 'processing' ? 'importing' : null,
+        error: importJob?.state === 'failed' ? importJob.error : null, importJob });
     } catch (error) {
       if (generation !== requestGeneration.current) return;
       if (error instanceof DOMException && error.name === 'AbortError') return;
@@ -107,6 +117,39 @@ export function useWorkspace() {
     };
   }, [initialize]);
 
+  useEffect(() => {
+    const jobId = state.importJob?.id;
+    if (!jobId || state.importJob?.state === 'completed' || state.importJob?.state === 'failed') return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let lastSeen = state.importJob;
+    const poll = async (): Promise<void> => {
+      try {
+        const job = await getImportJob(jobId);
+        if (stopped) return;
+        const contentChanged = job.completedChunks !== lastSeen?.completedChunks
+          || job.metrics.translatedSegments !== lastSeen?.metrics.translatedSegments
+          || job.stage !== lastSeen?.stage || job.state !== lastSeen?.state;
+        lastSeen = job;
+        const [meeting, meetings] = contentChanged
+          ? await Promise.all([getMeeting(job.meetingId), listMeetings()])
+          : [null, null];
+        if (stopped) return;
+        const active = job.state === 'queued' || job.state === 'processing';
+        setState((current) => ({ ...current, importJob: job, meetings: meetings ?? current.meetings,
+          selected: meeting !== null && current.selected?.id === job.meetingId ? meeting : current.selected,
+          busy: active, operation: active ? 'importing' : null,
+          error: job.state === 'failed' ? job.error : current.error }));
+        if (!active) return;
+      } catch (error) {
+        if (!stopped) setState((current) => ({ ...current, error: messageFor(error) }));
+      }
+      if (!stopped) timer = setTimeout(() => { void poll(); }, 800);
+    };
+    void poll();
+    return () => { stopped = true; if (timer !== null) clearTimeout(timer); };
+  }, [state.importJob?.id, state.importJob?.state]);
+
   const create = useCallback(async (
     title: string,
     language: SourceLanguage,
@@ -132,15 +175,24 @@ export function useWorkspace() {
   ): Promise<void> => {
     setState((current) => ({ ...current, busy: true, operation: 'importing', error: null }));
     try {
-      const result = await importMeeting(file, title, language, interpret);
-      await refreshMeetings();
-      setState((current) => ({ ...current, selected: result.meeting }));
+      const job = await startImportJob(file, title, language, interpret);
+      const [meeting, meetings] = await Promise.all([getMeeting(job.meetingId), listMeetings()]);
+      setState((current) => ({ ...current, selected: meeting, meetings, importJob: job }));
+    } catch (error) {
+      setState((current) => ({ ...current, error: messageFor(error), busy: false, operation: null }));
+    }
+  }, []);
+
+  const retryImport = useCallback(async (): Promise<void> => {
+    const id = state.importJob?.id;
+    if (!id) return;
+    try {
+      const job = await retryImportJob(id);
+      setState((current) => ({ ...current, importJob: job, busy: true, operation: 'importing', error: null }));
     } catch (error) {
       setState((current) => ({ ...current, error: messageFor(error) }));
-    } finally {
-      setState((current) => ({ ...current, busy: false, operation: null }));
     }
-  }, [refreshMeetings]);
+  }, [state.importJob?.id]);
 
   const rename = useCallback(async (title: string): Promise<void> => {
     if (!state.selected) return;
@@ -190,6 +242,7 @@ export function useWorkspace() {
     loadMeeting,
     create,
     importFile,
+    retryImport,
     rename,
     summarize,
     appendSegments,

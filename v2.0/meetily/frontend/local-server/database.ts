@@ -1,5 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { existsSync, mkdirSync } from 'node:fs';
+import { copyFile, mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import {
@@ -7,6 +8,8 @@ import {
   languageSchema,
   meetingDetailSchema,
   meetingSchema,
+  importJobSchema,
+  type ImportJob,
   type LocalMeeting,
   type LocalSegment,
   type MeetingDetail,
@@ -74,6 +77,12 @@ export class LocalStore {
       );
       CREATE TABLE IF NOT EXISTS local_meta.audio_files (
         meeting_id TEXT PRIMARY KEY, file_name TEXT NOT NULL, mime_type TEXT NOT NULL, sha256 TEXT
+      );
+      CREATE TABLE IF NOT EXISTS local_meta.import_jobs (
+        id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, state TEXT NOT NULL,
+        stage TEXT NOT NULL, completed_chunks INTEGER NOT NULL DEFAULT 0,
+        total_chunks INTEGER NOT NULL DEFAULT 0, error TEXT,
+        metrics_json TEXT NOT NULL, updated_at TEXT NOT NULL
       )
     `);
     const audioColumns = this.#database.query<{ readonly name: string }, []>('PRAGMA local_meta.table_info(audio_files)').all();
@@ -154,6 +163,65 @@ export class LocalStore {
       interpret: input.interpret,
       segmentCount: 0,
     });
+  }
+
+  importJobDirectory(id: string): string {
+    if (!/^import-[0-9a-f-]{36}$/.test(id)) throw new LocalServerError('INVALID_JOB', 400, 'Invalid import job');
+    return join(this.#audioDirectory, 'import-jobs', id);
+  }
+
+  createImportJob(id: string, input: CreateMeetingInput): ImportJob {
+    this.importJobDirectory(id);
+    const meeting = this.createMeeting(input);
+    const job = importJobSchema.parse({
+      id, meetingId: meeting.id, state: 'queued', stage: 'queued', completedChunks: 0, totalChunks: 0, error: null,
+      metrics: { uploadMs: 0, decodeMs: 0, silenceMs: 0, asrMs: 0, translateMs: 0, saveMs: 0, totalMs: 0, firstTranscriptMs: null, peakRssBytes: 0, translatedSegments: 0 },
+    });
+    this.saveImportJob(job);
+    return job;
+  }
+
+  getImportJob(id: string): ImportJob | null {
+    this.importJobDirectory(id);
+    const row = this.#database.query<{
+      readonly meetingId: string; readonly state: string; readonly stage: string;
+      readonly completedChunks: number; readonly totalChunks: number; readonly error: string | null; readonly metricsJson: string;
+    }, [string]>(`SELECT meeting_id AS meetingId, state, stage, completed_chunks AS completedChunks,
+      total_chunks AS totalChunks, error, metrics_json AS metricsJson FROM local_meta.import_jobs WHERE id = ?`).get(id);
+    return row === null ? null : importJobSchema.parse({ id, ...row, metrics: { translatedSegments: 0, totalMs: 0, silenceMs: 0, ...JSON.parse(row.metricsJson) } });
+  }
+
+  listUnfinishedImportJobs(): readonly ImportJob[] {
+    const ids = this.#database.query<{ readonly id: string }, []>(
+      "SELECT id FROM local_meta.import_jobs WHERE state IN ('queued', 'processing')",
+    ).all();
+    return ids.map(({ id }) => this.getImportJob(id)).filter((job): job is ImportJob => job !== null);
+  }
+
+  listImportJobs(): readonly ImportJob[] {
+    const ids = this.#database.query<{ readonly id: string }, []>(
+      'SELECT id FROM local_meta.import_jobs ORDER BY updated_at DESC LIMIT 20',
+    ).all();
+    return ids.map(({ id }) => this.getImportJob(id)).filter((job): job is ImportJob => job !== null);
+  }
+
+  saveImportJob(job: ImportJob): void {
+    const value = importJobSchema.parse(job);
+    this.#database.run(`INSERT INTO local_meta.import_jobs
+      (id, meeting_id, state, stage, completed_chunks, total_chunks, error, metrics_json, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET state = excluded.state, stage = excluded.stage,
+      completed_chunks = excluded.completed_chunks, total_chunks = excluded.total_chunks,
+      error = excluded.error, metrics_json = excluded.metrics_json, updated_at = excluded.updated_at`, [
+      value.id, value.meetingId, value.state, value.stage, value.completedChunks, value.totalChunks,
+      value.error, JSON.stringify(value.metrics), new Date().toISOString(),
+    ]);
+  }
+
+  updateSegmentTranslation(meetingId: string, id: string, translation: string | null, error: string | null): void {
+    const result = this.#database.run(`UPDATE local_meta.segment_metadata SET translation = ?, translation_error = ?
+      WHERE meeting_id = ? AND transcript_id = ?`, [translation, error, meetingId, id]);
+    if (result.changes !== 1) throw new LocalServerError('NOT_FOUND', 404, 'Transcript segment not found');
   }
 
   renameMeeting(meetingId: string, title: string): LocalMeeting {
@@ -287,6 +355,25 @@ export class LocalStore {
     await Bun.write(join(this.#audioDirectory, fileName), bytes);
     this.#database.run('INSERT INTO local_meta.audio_files (meeting_id, file_name, mime_type, sha256) VALUES (?, ?, ?, ?)',
       [meetingId, fileName, mimeType, sha256]);
+  }
+
+  async saveAudioFromPath(meetingId: string, sourcePath: string): Promise<void> {
+    if (this.getMeeting(meetingId) === null) throw new LocalServerError('NOT_FOUND', 404, 'Meeting not found');
+    const existing = this.#database.query<{ readonly fileName: string }, [string]>(
+      'SELECT file_name AS fileName FROM local_meta.audio_files WHERE meeting_id = ?',
+    ).get(meetingId);
+    if (existing !== null) return;
+    const fileName = `${crypto.randomUUID()}.wav`;
+    const destination = join(this.#audioDirectory, fileName);
+    await mkdir(this.#audioDirectory, { recursive: true, mode: 0o700 });
+    await copyFile(sourcePath, destination);
+    try {
+      this.#database.run('INSERT INTO local_meta.audio_files (meeting_id, file_name, mime_type, sha256) VALUES (?, ?, ?, NULL)',
+        [meetingId, fileName, 'audio/wav']);
+    } catch (error) {
+      await rm(destination, { force: true });
+      throw error;
+    }
   }
 
   getAudio(meetingId: string): { readonly file: ReturnType<typeof Bun.file>; readonly mimeType: string } | null {

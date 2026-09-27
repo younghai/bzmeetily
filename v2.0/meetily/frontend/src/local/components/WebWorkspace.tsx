@@ -25,9 +25,7 @@ export function WebWorkspace() {
     onReload: workspace.loadMeeting,
   });
   const interactionLocked = workspace.loading || workspace.busy || recording.locked;
-  const operationLabel = workspace.operation === 'importing'
-    ? '파일을 전사·번역하는 중…'
-    : workspace.operation === 'summarizing'
+  const operationLabel = workspace.operation === 'summarizing'
       ? '한국어 요약을 생성하는 중…'
       : workspace.operation === 'creating'
         ? '새 회의를 만드는 중…'
@@ -69,6 +67,19 @@ export function WebWorkspace() {
           </div>
 
           <MeetingSetup disabled={interactionLocked || workspace.busy} onCreate={workspace.create} onImport={workspace.importFile} />
+
+          {workspace.importJob && (
+            <div role="status" className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-medium">파일 처리 · {({ queued: '대기', decoding: '음성 변환', transcribing: '일본어 전사', translating: '한국어 번역', saving: '녹음 저장', completed: '완료' } as const)[workspace.importJob.stage]}</span>
+                <span>{workspace.importJob.completedChunks}/{workspace.importJob.totalChunks || '…'} 구간</span>
+              </div>
+              {workspace.importJob.totalChunks > 0 && <progress className="mt-2 w-full" max={workspace.importJob.totalChunks} value={workspace.importJob.completedChunks} aria-label="파일 전사 진행률" />}
+              {workspace.importJob.stage === 'translating' && <p className="mt-1 text-xs">한국어 번역 {workspace.importJob.metrics.translatedSegments}개 완료</p>}
+              {workspace.importJob.state === 'completed' && <p className="mt-1 text-xs">처리 시간 {(workspace.importJob.metrics.totalMs / 1000).toFixed(1)}초 · 첫 전사 {workspace.importJob.metrics.firstTranscriptMs === null ? '없음' : `${(workspace.importJob.metrics.firstTranscriptMs / 1000).toFixed(1)}초`} · 로컬 서버 최고 RSS {(workspace.importJob.metrics.peakRssBytes / 1024 / 1024).toFixed(0)} MiB</p>}
+              {workspace.importJob.state === 'failed' && <button type="button" onClick={() => void workspace.retryImport()} className="mt-2 min-h-9 rounded-lg border border-blue-300 px-3 text-xs font-medium">완료한 구간부터 다시 시도</button>}
+            </div>
+          )}
 
           {operationLabel && (
             <div role="status" className="flex items-center rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm font-medium text-blue-800">

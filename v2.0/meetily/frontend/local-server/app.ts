@@ -1,6 +1,7 @@
 import type { InferenceClient } from './inference';
 import type { LocalStore } from './database';
-import { extname, resolve, sep } from 'node:path';
+import { extname, join, resolve, sep } from 'node:path';
+import { mkdir, rm } from 'node:fs/promises';
 import { ZodError, z } from 'zod';
 
 import {
@@ -8,6 +9,7 @@ import {
   chunkResultSchema,
   createMeetingSchema,
   importResultSchema,
+  importJobSchema,
   meetingIdSchema,
   summarySchema,
   translationRequestSchema,
@@ -15,6 +17,7 @@ import {
 } from '../src/local/contracts';
 import { LocalServerError } from './errors';
 import { convertImportToWav } from './import-audio';
+import { ImportJobRunner, receiveImportFile } from './import-jobs';
 import { authorizeRequest, readBoundedBody } from './security';
 
 export type LocalAppOptions = {
@@ -25,6 +28,7 @@ export type LocalAppOptions = {
   readonly staticDirectory: string;
   readonly maxChunkBytes?: number;
   readonly maxImportBytes?: number;
+  readonly maxJobImportBytes?: number;
   readonly ffmpegPath?: string;
   readonly importTimeoutMs?: number;
 };
@@ -33,12 +37,17 @@ export function createLocalApp(_options: LocalAppOptions): (request: Request) =>
   const options = {
     maxChunkBytes: 12 * 1024 * 1024,
     maxImportBytes: 512 * 1024 * 1024,
+    maxJobImportBytes: 1536 * 1024 * 1024,
     ffmpegPath: 'ffmpeg',
     importTimeoutMs: 10 * 60 * 1000,
     instanceId: null,
     ..._options,
   };
   const chunkTasks = new Map<string, Promise<{ readonly segments: readonly LocalSegment[] }>>();
+  const importJobs = new ImportJobRunner({
+    getStore: options.getStore, inference: options.inference,
+    ffmpegPath: options.ffmpegPath, importTimeoutMs: options.importTimeoutMs,
+  });
   return async (request) => {
     const authorization = authorizeRequest(request, options.port);
     if ('reason' in authorization) return json({ error: `Forbidden ${authorization.reason}` }, 403);
@@ -48,7 +57,7 @@ export function createLocalApp(_options: LocalAppOptions): (request: Request) =>
     }
     try {
       const response = request.url.includes('/api/local')
-        ? await routeApi(request, options, chunkTasks)
+        ? await routeApi(request, options, chunkTasks, importJobs)
         : await serveStatic(request, options.staticDirectory);
       if (corsHeaders !== undefined) for (const [key, value] of Object.entries(corsHeaders)) response.headers.set(key, value);
       return response;
@@ -64,9 +73,10 @@ export function createLocalApp(_options: LocalAppOptions): (request: Request) =>
   };
 }
 
-type ResolvedOptions = Required<Omit<LocalAppOptions, 'maxChunkBytes' | 'maxImportBytes' | 'ffmpegPath' | 'importTimeoutMs' | 'instanceId'>> & {
+type ResolvedOptions = Required<Omit<LocalAppOptions, 'maxChunkBytes' | 'maxImportBytes' | 'maxJobImportBytes' | 'ffmpegPath' | 'importTimeoutMs' | 'instanceId'>> & {
   readonly maxChunkBytes: number;
   readonly maxImportBytes: number;
+  readonly maxJobImportBytes: number;
   readonly ffmpegPath: string;
   readonly importTimeoutMs: number;
   readonly instanceId: string | null;
@@ -77,6 +87,7 @@ async function routeApi(
   request: Request,
   options: ResolvedOptions,
   chunkTasks: Map<string, Promise<{ readonly segments: readonly LocalSegment[] }>>,
+  importJobs: ImportJobRunner,
 ): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === '/api/local/status' && request.method === 'GET') {
@@ -84,6 +95,46 @@ async function routeApi(
     return json({ ...status, instanceId: options.instanceId ?? null });
   }
   const store = options.getStore();
+  importJobs.resume();
+  if (url.pathname === '/api/local/import-jobs' && request.method === 'GET') return json(store.listImportJobs());
+  if (url.pathname === '/api/local/import-jobs' && request.method === 'POST') {
+    if (request.headers.get('content-type')?.split(';')[0] !== 'audio/wav'
+      && request.headers.get('content-type')?.split(';')[0] !== 'application/octet-stream') {
+      throw new LocalServerError('UNSUPPORTED_MEDIA', 415, 'Expected an audio file');
+    }
+    const input = createMeetingSchema.parse({
+      title: url.searchParams.get('title'), language: url.searchParams.get('language'),
+      interpret: url.searchParams.get('interpret') === 'true',
+    });
+    const id = `import-${crypto.randomUUID()}`;
+    const directory = store.importJobDirectory(id);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    try {
+      const startedAt = performance.now();
+      await receiveImportFile(request, join(directory, 'source'), options.maxJobImportBytes);
+      const job = store.createImportJob(id, input);
+      const result = importJobSchema.parse({ ...job, metrics: { ...job.metrics, uploadMs: performance.now() - startedAt } });
+      store.saveImportJob(result);
+      importJobs.start(id);
+      return json(result, 202);
+    } catch (error) {
+      await rm(directory, { recursive: true, force: true });
+      throw error;
+    }
+  }
+  const importMatch = url.pathname.match(/^\/api\/local\/import-jobs\/(import-[0-9a-f-]{36})(?:\/(retry))?$/);
+  if (importMatch !== null) {
+    const job = store.getImportJob(importMatch[1]);
+    if (job === null) throw new LocalServerError('NOT_FOUND', 404, 'Import job not found');
+    if (importMatch[2] === undefined && request.method === 'GET') return json(job);
+    if (importMatch[2] === 'retry' && request.method === 'POST') {
+      if (job.state !== 'failed') throw new LocalServerError('INVALID_STATE', 409, 'Only failed imports can be retried');
+      const retried = importJobSchema.parse({ ...job, state: 'queued', stage: 'queued', error: null });
+      store.saveImportJob(retried);
+      importJobs.start(job.id);
+      return json(retried, 202);
+    }
+  }
   if (url.pathname === '/api/local/meetings' && request.method === 'GET') return json(store.listMeetings());
   if (url.pathname === '/api/local/meetings' && request.method === 'POST') {
     const body = await readJson(request, 32 * 1024);

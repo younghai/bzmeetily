@@ -1,0 +1,16 @@
+# Import and Japanese ASR evaluation, 2026-09-27
+
+These are development-machine measurements, not a release benchmark. The short sample is a 26.27-second Japanese test recording with its known source script. The 70-second file repeats that sample, and the 75-minute file places the same sample at both ends of a long digital-silence interval. None is a reviewed 5/30/75-minute meeting corpus. The short synthetic sample permits a CER calculation; real-meeting CER and translation adequacy still require reviewed references.
+
+| Check | Result | Limit |
+| --- | --- | --- |
+| Localhost 26.27s import with JA→KO | 5 Japanese segments appeared before translation; all 5 Korean translations completed. First Japanese transcript 0.565s; total 7.395s. | Translation dominated elapsed time (6.829s). |
+| Localhost 75-minute synthetic import | 151/151 chunks completed, 10 utterances at the beginning and end, audioAvailable true. Upload 0.041s, decode 0.412s, ASR 1.638s, total 2.120s, first transcript 1.131s; Bun peak RSS 177 MB. | Mostly exact digital silence; not representative of 75 minutes of speech. Whisper and Ollama live in separate processes and are excluded from the RSS figure. |
+| Native 3601s, 48 kHz stereo decode and resample | Legacy 54.10s / 2.71 GB peak RSS; bounded spool 59.13s / 0.79 GB. Output sample count and checksum matched, and a 301s fixture matched sample-by-sample. | Decode/resample only; CPU contention during builds may affect timing. Existing 16 kHz VAD and speech segments still scale with duration. |
+| Whisper vs FluidAudio Japanese TDT, 26.27s sample | Against the known source script, Whisper CER 0.0% / 0.526s; disk-backed Fluid CER 44.6% at 1, 2 and 4 workers / 0.373s, 0.315s and 0.313s, including cached model load. | Fluid output omitted later utterances, including the sentence about owners and deadlines. This is synthetic speech, not a meeting-quality score. |
+| FluidAudio with independent short windows on the 26.27s sample | 10s windows: CER 9.9% / 0.526s; 15s windows: CER 6.6% / 0.411s, including segmentation and per-window model load. | The boundary still lost part of a clause. This is a research candidate, not a production setting. |
+| Whisper vs FluidAudio, repeated 70s sample | Whisper 1.231s, disk-backed Fluid 0.751s (1 worker). | Fluid output was substantially shorter and omitted or merged content. This is a synthetic stress case, not a CER result. |
+
+The default engine remains Whisper. FluidAudio is available as a pinned local A/B tool, not a selectable production engine: the observed omissions fail the content-preservation gate. Explicit disk-backed transcription repeated the short-sample omission. Independent 15-second windows recovered much of the content, but their seam still missed words. Retest with reviewed meeting recordings before exposing it in the app. The model is separately licensed CC-BY-4.0; distribution would also require attribution and packaging review.
+
+The localhost import skips only exact digital zero chunks. Noise-aware VAD, stereo-speaker separation, denoising, native ASR parallelism, live macOS app import, and real-file 5/30/75-minute CER and Korean meaning scores remain unverified. The 1-second overlap and exact-text/time deduplication passed focused duplicate and one-sided-boundary tests, but low-SNR boundary speech still needs real-audio evaluation.

@@ -13,6 +13,9 @@ const roots: string[] = [];
 
 class FakeInference implements InferenceClient {
   calls = 0;
+  failOnceSequence: number | null = null;
+  failTranslationOnce = false;
+  segmentFactory: ((context: { readonly sequence: number; readonly start: number; readonly duration: number }) => readonly LocalSegment[]) | null = null;
   translationSignal?: AbortSignal;
   translationContext: readonly TranslationContextTurn[] = [];
   lastContext: { readonly sequence: number; readonly start: number; readonly duration: number; readonly language?: string; readonly interpret?: boolean; readonly signal?: AbortSignal } | null = null;
@@ -20,9 +23,18 @@ class FakeInference implements InferenceClient {
   async transcribe(_audio: Blob, context: { readonly sequence: number; readonly start: number; readonly duration: number }): Promise<readonly LocalSegment[]> {
     this.calls += 1;
     this.lastContext = context;
+    if (this.failOnceSequence === context.sequence) {
+      this.failOnceSequence = null;
+      throw new Error('temporary ASR failure');
+    }
+    if (this.segmentFactory !== null) return this.segmentFactory(context);
     return [{ id: crypto.randomUUID(), sequence: context.sequence, start: context.start, end: context.start + context.duration, sourceText: 'こんにちは', translation: '안녕하세요', translationError: null }];
   }
   async translate(_text: string, context: readonly TranslationContextTurn[], signal?: AbortSignal) {
+    if (this.failTranslationOnce) {
+      this.failTranslationOnce = false;
+      throw new Error('temporary translation failure');
+    }
     this.translationContext = context;
     this.translationSignal = signal;
     return { text: '안녕하세요', elapsedMs: 1 };
@@ -30,7 +42,7 @@ class FakeInference implements InferenceClient {
   async summarize() { return '# 요약'; }
 }
 
-async function fixture(): Promise<{ readonly app: (request: Request) => Promise<Response>; readonly store: LocalStore; readonly inference: FakeInference }> {
+async function fixture(maxJobImportBytes?: number): Promise<{ readonly app: (request: Request) => Promise<Response>; readonly store: LocalStore; readonly inference: FakeInference }> {
   const root = await mkdtemp(join(tmpdir(), 'meetily-local-app-'));
   roots.push(root);
   const nativePath = join(root, 'native.sqlite');
@@ -48,7 +60,7 @@ async function fixture(): Promise<{ readonly app: (request: Request) => Promise<
   const store = new LocalStore({ nativePath, sidecarPath: join(root, 'sidecar.sqlite'), audioDirectory: join(root, 'audio') });
   store.initialize();
   const inference = new FakeInference();
-  return { app: createLocalApp({ port: 3118, getStore: () => store, inference, staticDirectory, maxChunkBytes: 8 }), store, inference };
+  return { app: createLocalApp({ port: 3118, getStore: () => store, inference, staticDirectory, maxChunkBytes: 8, maxJobImportBytes }), store, inference };
 }
 
 function writeRequest(url: string, init: RequestInit): Request {
@@ -64,6 +76,165 @@ afterEach(async () => {
 });
 
 describe('local HTTP API', () => {
+  it('rejects an oversized streamed import before creating a meeting', async () => {
+    const { app, store } = await fixture(8);
+    const response = await app(writeRequest('http://127.0.0.1:3118/api/local/import-jobs?title=Too%20large&language=ja&interpret=false', {
+      method: 'POST', body: new Uint8Array(9), headers: { 'content-type': 'audio/wav' },
+    }));
+    expect(response.status).toBe(413);
+    expect(store.listMeetings()).toHaveLength(0);
+    store.close();
+  });
+
+  it('streams a long file into a resumable import job and exposes incremental transcript progress', async () => {
+    const { app, store, inference } = await fixture();
+    const source = wavFixture(31);
+    const created = await app(writeRequest('http://127.0.0.1:3118/api/local/import-jobs?title=Long%20meeting&language=ja&interpret=false', {
+      method: 'POST', body: source, headers: { 'content-type': 'audio/wav' },
+    }));
+    expect(created.status).toBe(202);
+    const initial = await created.json();
+    expect(initial.id).toStartWith('import-');
+    let result = initial;
+    for (let attempt = 0; attempt < 100 && result.state !== 'completed' && result.state !== 'failed'; attempt += 1) {
+      await Bun.sleep(50);
+      const response = await app(writeRequest(`http://127.0.0.1:3118/api/local/import-jobs/${initial.id}`, { method: 'GET' }));
+      result = await response.json();
+    }
+    expect(result.state).toBe('completed');
+    expect(result.completedChunks).toBe(2);
+    expect(inference.calls).toBe(2);
+    const meeting = store.getMeeting(result.meetingId);
+    expect(meeting?.segments).toHaveLength(2);
+    expect(meeting?.audioAvailable).toBe(true);
+    expect(result.metrics.decodeMs).toBeGreaterThanOrEqual(0);
+    store.close();
+  });
+
+  it('retries an interrupted import without retranscribing completed chunks', async () => {
+    const { app, store, inference } = await fixture();
+    inference.failOnceSequence = 1;
+    const created = await app(writeRequest('http://127.0.0.1:3118/api/local/import-jobs?title=Retry&language=ja&interpret=false', {
+      method: 'POST', body: wavFixture(31), headers: { 'content-type': 'audio/wav' },
+    }));
+    const initial = await created.json();
+    let failed = initial;
+    for (let attempt = 0; attempt < 100 && failed.state !== 'failed'; attempt += 1) {
+      await Bun.sleep(30);
+      failed = await (await app(writeRequest(`http://127.0.0.1:3118/api/local/import-jobs/${initial.id}`, { method: 'GET' }))).json();
+    }
+    expect(failed.state).toBe('failed');
+    expect(failed.completedChunks).toBe(1);
+    expect(store.getMeeting(failed.meetingId)?.segments).toHaveLength(1);
+    const retried = await app(writeRequest(`http://127.0.0.1:3118/api/local/import-jobs/${initial.id}/retry`, { method: 'POST' }));
+    expect(retried.status).toBe(202);
+    let completed = await retried.json();
+    for (let attempt = 0; attempt < 100 && completed.state !== 'completed' && completed.state !== 'failed'; attempt += 1) {
+      await Bun.sleep(30);
+      completed = await (await app(writeRequest(`http://127.0.0.1:3118/api/local/import-jobs/${initial.id}`, { method: 'GET' }))).json();
+    }
+    expect(completed.state).toBe('completed');
+    expect(inference.calls).toBe(3);
+    expect(store.getMeeting(completed.meetingId)?.segments).toHaveLength(2);
+    store.close();
+  });
+
+  it('resumes a processing job after a server restart from persisted chunk receipts', async () => {
+    const { app, store, inference } = await fixture();
+    inference.failOnceSequence = 1;
+    const created = await app(writeRequest('http://127.0.0.1:3118/api/local/import-jobs?title=Restart&language=ja&interpret=false', {
+      method: 'POST', body: wavFixture(31), headers: { 'content-type': 'audio/wav' },
+    }));
+    const initial = await created.json();
+    let result = initial;
+    for (let attempt = 0; attempt < 100 && result.state !== 'failed'; attempt += 1) {
+      await Bun.sleep(30);
+      result = await (await app(writeRequest(`http://127.0.0.1:3118/api/local/import-jobs/${initial.id}`, { method: 'GET' }))).json();
+    }
+    expect(result.completedChunks).toBe(1);
+    store.saveImportJob({ ...result, state: 'processing', error: null });
+    const restarted = createLocalApp({ port: 3118, getStore: () => store, inference, staticDirectory: '' });
+    for (let attempt = 0; attempt < 100 && result.state !== 'completed'; attempt += 1) {
+      await Bun.sleep(30);
+      result = await (await restarted(writeRequest(`http://127.0.0.1:3118/api/local/import-jobs/${initial.id}`, { method: 'GET' }))).json();
+    }
+    expect(result.state).toBe('completed');
+    expect(inference.calls).toBe(3);
+    expect(store.getMeeting(result.meetingId)?.segments).toHaveLength(2);
+    store.close();
+  });
+
+  it('retries failed translations without retranscribing completed audio', async () => {
+    const { app, store, inference } = await fixture();
+    inference.failTranslationOnce = true;
+    inference.segmentFactory = ({ sequence, start, duration }) => [{
+      id: crypto.randomUUID(), sequence, start, end: start + duration,
+      sourceText: 'こんにちは', translation: null, translationError: null,
+    }];
+    const created = await app(writeRequest('http://127.0.0.1:3118/api/local/import-jobs?title=Translation%20retry&language=ja&interpret=true', {
+      method: 'POST', body: wavFixture(1), headers: { 'content-type': 'audio/wav' },
+    }));
+    const initial = await created.json();
+    let result = initial;
+    for (let attempt = 0; attempt < 100 && result.state !== 'failed'; attempt += 1) {
+      await Bun.sleep(30);
+      result = await (await app(writeRequest(`http://127.0.0.1:3118/api/local/import-jobs/${initial.id}`, { method: 'GET' }))).json();
+    }
+    expect(result.state).toBe('failed');
+    expect(inference.calls).toBe(1);
+    expect(store.getMeeting(result.meetingId)?.segments[0]?.translationError).toContain('temporary');
+    await app(writeRequest(`http://127.0.0.1:3118/api/local/import-jobs/${initial.id}/retry`, { method: 'POST' }));
+    for (let attempt = 0; attempt < 100 && result.state !== 'completed'; attempt += 1) {
+      await Bun.sleep(30);
+      result = await (await app(writeRequest(`http://127.0.0.1:3118/api/local/import-jobs/${initial.id}`, { method: 'GET' }))).json();
+    }
+    expect(result.state).toBe('completed');
+    expect(result.metrics.translatedSegments).toBe(1);
+    expect(inference.calls).toBe(1);
+    expect(store.getMeeting(result.meetingId)?.segments[0]?.translation).toBe('안녕하세요');
+    store.close();
+  });
+
+  it('keeps an overlap-boundary utterance once when adjacent chunks both recognize it', async () => {
+    const { app, store, inference } = await fixture();
+    inference.segmentFactory = ({ sequence }) => [{
+      id: crypto.randomUUID(), sequence: sequence * 1000, start: 29, end: 30.2,
+      sourceText: '境界の発言', translation: null, translationError: null,
+    }];
+    const created = await app(writeRequest('http://127.0.0.1:3118/api/local/import-jobs?title=Boundary&language=ja&interpret=false', {
+      method: 'POST', body: wavFixture(31), headers: { 'content-type': 'audio/wav' },
+    }));
+    const initial = await created.json();
+    let result = initial;
+    for (let attempt = 0; attempt < 100 && result.state !== 'completed' && result.state !== 'failed'; attempt += 1) {
+      await Bun.sleep(30);
+      result = await (await app(writeRequest(`http://127.0.0.1:3118/api/local/import-jobs/${initial.id}`, { method: 'GET' }))).json();
+    }
+    expect(result.state).toBe('completed');
+    expect(inference.calls).toBe(2);
+    expect(store.getMeeting(result.meetingId)?.segments.map((segment) => segment.sourceText)).toEqual(['境界の発言']);
+    store.close();
+  });
+
+  it('keeps a boundary utterance when only the earlier chunk recognizes it', async () => {
+    const { app, store, inference } = await fixture();
+    inference.segmentFactory = ({ sequence }) => sequence === 0 ? [{
+      id: crypto.randomUUID(), sequence: 0, start: 29.7, end: 31.5,
+      sourceText: '境界を越える発言', translation: null, translationError: null,
+    }] : [];
+    const created = await app(writeRequest('http://127.0.0.1:3118/api/local/import-jobs?title=One-sided%20boundary&language=ja&interpret=false', {
+      method: 'POST', body: wavFixture(31), headers: { 'content-type': 'audio/wav' },
+    }));
+    const initial = await created.json();
+    let result = initial;
+    for (let attempt = 0; attempt < 100 && result.state !== 'completed' && result.state !== 'failed'; attempt += 1) {
+      await Bun.sleep(30);
+      result = await (await app(writeRequest(`http://127.0.0.1:3118/api/local/import-jobs/${initial.id}`, { method: 'GET' }))).json();
+    }
+    expect(result.state).toBe('completed');
+    expect(store.getMeeting(result.meetingId)?.segments.map((segment) => segment.sourceText)).toEqual(['境界を越える発言']);
+    store.close();
+  });
   it('rejects a hostile Host before serving static files', async () => {
     // Given
     const { app, store } = await fixture();
@@ -220,8 +391,8 @@ describe('local HTTP API', () => {
   });
 });
 
-function wavFixture(): ArrayBuffer {
-  const sampleCount = 1600;
+function wavFixture(seconds = 0.1): ArrayBuffer {
+  const sampleCount = Math.round(seconds * 16000);
   const buffer = new ArrayBuffer(44 + sampleCount * 2);
   const view = new DataView(buffer);
   const write = (offset: number, value: string): void => {
@@ -231,6 +402,7 @@ function wavFixture(): ArrayBuffer {
   write(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
   view.setUint32(24, 16000, true); view.setUint32(28, 32000, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
   write(36, 'data'); view.setUint32(40, sampleCount * 2, true);
+  for (let sample = 0; sample < sampleCount; sample += 1) view.setInt16(44 + sample * 2, Math.round(Math.sin(sample * 0.1) * 1000), true);
   return buffer;
 }
 

@@ -4,6 +4,7 @@ import {
   chunkResultSchema,
   createMeetingSchema,
   importResultSchema,
+  importJobSchema,
   meetingDetailSchema,
   meetingSchema,
   serviceStatusSchema,
@@ -11,7 +12,7 @@ import {
   translationRequestSchema,
   translationSchema,
 } from './contracts';
-import type { MeetingDetail, ServiceStatus, SourceLanguage, TranslationContextTurn } from './contracts';
+import type { ImportJob, MeetingDetail, ServiceStatus, SourceLanguage, TranslationContextTurn } from './contracts';
 import type { AudioChunk } from './audio';
 
 const meetingsSchema = z.array(meetingSchema);
@@ -158,6 +159,26 @@ export function importMeeting(
   body.set('language', parsed.language);
   body.set('interpret', String(parsed.interpret));
   return requestJson('/import', importResultSchema, { method: 'POST', body });
+}
+
+export async function startImportJob(file: File, title: string, language: SourceLanguage, interpret: boolean): Promise<ImportJob> {
+  const input = createMeetingSchema.parse({ title, language, interpret });
+  const query = new URLSearchParams({ title: input.title, language: input.language, interpret: String(input.interpret) });
+  return requestJson(`/import-jobs?${query}`, importJobSchema, {
+    method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file,
+  });
+}
+
+export function getImportJob(id: string): Promise<ImportJob> {
+  return requestJson(`/import-jobs/${encodeURIComponent(id)}`, importJobSchema);
+}
+
+export function listImportJobs(): Promise<readonly ImportJob[]> {
+  return requestJson('/import-jobs', z.array(importJobSchema));
+}
+
+export function retryImportJob(id: string): Promise<ImportJob> {
+  return requestJson(`/import-jobs/${encodeURIComponent(id)}/retry`, importJobSchema, { method: 'POST' });
 }
 
 export function generateSummary(id: string) {

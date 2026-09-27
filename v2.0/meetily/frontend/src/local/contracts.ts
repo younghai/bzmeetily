@@ -54,6 +54,17 @@ export const translationRequestSchema = z.object({
 export const translationSchema = z.object({ text: z.string(), elapsedMs: z.number().nonnegative() });
 export const summarySchema = z.object({ markdown: z.string() });
 export const importResultSchema = z.object({ meeting: meetingDetailSchema });
+export const importJobSchema = z.object({
+  id: z.string().regex(/^import-[0-9a-f-]{36}$/),
+  meetingId: meetingIdSchema,
+  state: z.enum(['queued', 'processing', 'failed', 'completed']),
+  stage: z.enum(['queued', 'decoding', 'transcribing', 'translating', 'saving', 'completed']),
+  completedChunks: z.number().int().nonnegative(),
+  totalChunks: z.number().int().nonnegative(),
+  error: z.string().nullable(),
+  metrics: z.object({ uploadMs: z.number().nonnegative(), decodeMs: z.number().nonnegative(), silenceMs: z.number().nonnegative(), asrMs: z.number().nonnegative(), translateMs: z.number().nonnegative(), saveMs: z.number().nonnegative(), totalMs: z.number().nonnegative(), firstTranscriptMs: z.number().nonnegative().nullable(), peakRssBytes: z.number().nonnegative(), translatedSegments: z.number().int().nonnegative() }),
+});
+export type ImportJob = z.infer<typeof importJobSchema>;
 export const chunkResultSchema = z.object({ segments: z.array(segmentSchema) });
 export const chunkQuerySchema = z.object({
   sequence: z.coerce.number().int().min(0).max(100000),

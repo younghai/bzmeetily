@@ -10,6 +10,31 @@ afterEach(() => {
 });
 
 describe('LocalInference', () => {
+  it('batches translation with stable ids and rejects missing utterances', async () => {
+    let mode: 'complete' | 'missing' = 'complete';
+    let requests = 0;
+    let requestedItems: unknown = null;
+    const ollama = Bun.serve({ port: 0, fetch: async (request) => {
+      requests += 1;
+      const body = await request.json();
+      requestedItems = JSON.parse(body.messages[1].content).items;
+      const translations = mode === 'complete'
+        ? [{ id: 'a', ko: '첫째' }, { id: 'b', ko: '둘째' }]
+        : [{ id: 'a', ko: '첫째' }];
+      return Response.json({ message: { content: JSON.stringify({ translations }) } });
+    } });
+    servers.push(ollama);
+    const inference = createInference(serverPort(ollama), 9);
+    const items = [
+      { id: 'a', start: 1, end: 2, speakerId: null, text: '最初' },
+      { id: 'b', start: 3, end: 4, speakerId: null, text: '次' },
+    ];
+    expect(await inference.translateBatch(items, [])).toEqual([{ id: 'a', text: '첫째' }, { id: 'b', text: '둘째' }]);
+    expect(requestedItems).toEqual(items);
+    mode = 'missing';
+    await expect(inference.translateBatch(items, [])).rejects.toMatchObject({ code: 'INVALID_TRANSLATION' });
+    expect(requests).toBe(2);
+  });
   it('transcribes while an Ollama request occupies its inference lane', async () => {
     // Given
     const ollamaStarted = deferred<void>();

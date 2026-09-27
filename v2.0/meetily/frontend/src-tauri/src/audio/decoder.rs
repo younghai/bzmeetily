@@ -7,6 +7,7 @@ use log::{debug, error, info, warn};
 use rayon::prelude::*;
 use std::borrow::Cow;
 use std::path::Path;
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::process::{Command, Stdio};
 
 use symphonia::core::audio::SampleBuffer;
@@ -398,6 +399,147 @@ pub fn decode_audio_file_with_progress(
     path: &Path,
     progress_callback: Option<ProgressCallback>,
 ) -> Result<DecodedAudio> {
+    let mut samples = Vec::new();
+    let mut decoded = decode_audio_packets(path, progress_callback, |packet, _, _| {
+        samples.extend_from_slice(packet);
+        Ok(())
+    })?;
+    decoded.samples = samples;
+    Ok(decoded)
+}
+
+/// Metadata fallback without retaining decoded audio samples.
+pub fn decode_audio_duration(path: &Path) -> Result<f64> {
+    Ok(decode_audio_packets(path, None, |_, _, _| Ok(()))?.duration_seconds)
+}
+
+/// Import path: spool mono PCM to disk instead of retaining source-rate audio.
+/// Global normalization and the existing 60s/100ms sinc cross-fade are preserved.
+/// The returned 16kHz samples still scale with duration; source buffers do not.
+pub fn decode_whisper_file_with_progress(
+    path: &Path,
+    decode_progress: Option<ProgressCallback>,
+    resample_progress: Option<ProgressCallback>,
+    cancelled: impl Fn() -> bool,
+) -> Result<DecodedAudio> {
+    let started = std::time::Instant::now();
+    let mut spool = tempfile::tempfile()?;
+    let mut peak = 0.0f32;
+    let metadata = {
+        let mut writer = BufWriter::new(&mut spool);
+        let metadata = decode_audio_packets(path, decode_progress, |samples, _, channels| {
+            if cancelled() {
+                return Err(anyhow!("Import cancelled"));
+            }
+            let mono = audio_to_mono(samples, channels);
+            for sample in &mono {
+                if sample.is_finite() { peak = peak.max(sample.abs()); }
+            }
+            // Temporary PCM is native-endian and only read by this process.
+            writer.write_all(bytemuck::cast_slice(&mono))?;
+            Ok(())
+        })?;
+        writer.flush()?;
+        metadata
+    };
+    let decode_ms = started.elapsed().as_millis();
+    let frames = (spool.metadata()?.len() / 4) as usize;
+    if let Some(callback) = &resample_progress {
+        callback(0, "Converting audio format...");
+    }
+    let samples = resample_mono_spool(
+        &mut spool, frames, metadata.sample_rate, peak, resample_progress, cancelled,
+    )?;
+    info!("import_metrics decode_ms={} resample_ms={} source_frames={} output_samples={}",
+        decode_ms, started.elapsed().as_millis() - decode_ms, frames, samples.len());
+    Ok(DecodedAudio {
+        samples,
+        sample_rate: 16000,
+        channels: 1,
+        duration_seconds: metadata.duration_seconds,
+    })
+}
+
+fn resample_mono_spool(
+    spool: &mut std::fs::File,
+    frames: usize,
+    source_rate: u32,
+    peak: f32,
+    progress: Option<ProgressCallback>,
+    cancelled: impl Fn() -> bool,
+) -> Result<Vec<f32>> {
+    // Match DecodedAudio's threshold: single-pass source input is at most ~55MiB.
+    let chunked = frames > 14_400_000;
+    let chunk_frames = if chunked || source_rate == 16000 {
+        source_rate as usize * 60
+    } else {
+        frames.max(1)
+    };
+    let overlap = if chunked && source_rate != 16000 { source_rate as usize / 10 } else { 0 };
+    let mut output = Vec::with_capacity((frames as f64 * 16000.0 / source_rate as f64) as usize + 1024);
+    let scale = if peak > 1.0 { 1.0 / peak } else { 1.0 };
+    // Cap source/DSP working memory while retaining available parallel sinc work.
+    // Unlike collecting every resampled chunk, this bound is independent of duration.
+    let batch_size = rayon::current_num_threads().clamp(1, 12);
+    let mut next_start = 0;
+    while next_start < frames {
+        let mut batch = Vec::with_capacity(batch_size);
+        for _ in 0..batch_size {
+            if next_start >= frames { break; }
+            if cancelled() { return Err(anyhow!("Import cancelled")); }
+            let start = next_start;
+            next_start += chunk_frames;
+            spool.seek(SeekFrom::Start(start as u64 * 4))?;
+            let count = (chunk_frames + overlap).min(frames - start);
+            let mut reader = BufReader::new(&mut *spool);
+            let mut input = vec![0.0f32; count];
+            reader.read_exact(bytemuck::cast_slice_mut(&mut input))?;
+            for value in &mut input {
+                let sample = *value * scale;
+                *value = if sample.is_finite() { sample.clamp(-1.0, 1.0) } else { 0.0 };
+            }
+            batch.push((start, input));
+        }
+        let resampled_batch: Vec<Result<(usize, Vec<f32>)>> = batch.into_par_iter()
+            .map(|(start, input)| {
+                let samples = if source_rate == 16000 { input } else {
+                    // Fail explicitly instead of retrying with a whole-file allocation.
+                    resample(&input, source_rate, 16000)?
+                };
+                Ok((start, samples))
+            }).collect();
+        for result in resampled_batch {
+            if cancelled() { return Err(anyhow!("Import cancelled")); }
+            let (start, resampled) = result?;
+            if start == 0 || overlap == 0 {
+                output.extend_from_slice(&resampled);
+            } else {
+                let fade_len = 1600.min(resampled.len()).min(output.len());
+                let out_start = output.len() - fade_len;
+                for i in 0..fade_len {
+                    let t = i as f32 / fade_len as f32;
+                    output[out_start + i] = output[out_start + i] * (1.0 - t) + resampled[i] * t;
+                }
+                output.extend_from_slice(&resampled[fade_len..]);
+            }
+            if let Some(callback) = &progress {
+                let percent = ((start + chunk_frames).min(frames) * 100 / frames) as u32;
+                callback(percent, &format!("Resampling audio: {}%", percent));
+            }
+        }
+    }
+    for sample in &mut output {
+        *sample = sample.clamp(-1.0, 1.0);
+    }
+    Ok(output)
+}
+
+/// Decode one packet at a time. Metadata uses the actual decoder output rate.
+fn decode_audio_packets(
+    path: &Path,
+    progress_callback: Option<ProgressCallback>,
+    mut consume: impl FnMut(&[f32], u32, u16) -> Result<()>,
+) -> Result<DecodedAudio> {
     info!("Decoding audio file: {}", path.display());
 
     // FFmpeg pre-conversion for unsupported formats (MKV, WebM, WMA).
@@ -476,7 +618,7 @@ pub fn decode_audio_file_with_progress(
         .map_err(|e| anyhow!("Failed to create decoder: {}", e))?;
 
     // Decode all packets
-    let mut all_samples: Vec<f32> = Vec::new();
+    let mut sample_count = 0usize;
     let mut sample_buf: Option<SampleBuffer<f32>> = None;
 
     // Calculate expected samples for progress tracking
@@ -543,12 +685,13 @@ pub fn decode_audio_file_with_progress(
                 // Copy samples to buffer
                 if let Some(ref mut buf) = sample_buf {
                     buf.copy_interleaved_ref(decoded);
-                    all_samples.extend_from_slice(buf.samples());
+                    consume(buf.samples(), sample_rate, channels)?;
+                    sample_count += buf.samples().len();
                 }
 
                 // Emit progress updates (every 10%)
                 if let (Some(callback), Some(expected)) = (&progress_callback, expected_samples) {
-                    let current_progress = ((all_samples.len() as f64 / expected as f64) * 100.0) as u32;
+                    let current_progress = ((sample_count as f64 / expected as f64) * 100.0) as u32;
                     if current_progress >= last_progress + 10 && current_progress <= 100 {
                         last_progress = current_progress;
                         callback(current_progress, &format!("Decoding audio: {}%", current_progress));
@@ -567,23 +710,23 @@ pub fn decode_audio_file_with_progress(
         callback(100, "Decoding complete");
     }
 
-    if all_samples.is_empty() {
+    if sample_count == 0 {
         return Err(anyhow!("No audio samples decoded from file"));
     }
 
-    let total_frames = all_samples.len() / channels as usize;
+    let total_frames = sample_count / channels as usize;
     let duration_seconds = total_frames as f64 / sample_rate as f64;
 
     info!(
         "Decoded {} samples ({:.2}s) at {}Hz, {} channels",
-        all_samples.len(),
+        sample_count,
         duration_seconds,
         sample_rate,
         channels
     );
 
     Ok(DecodedAudio {
-        samples: all_samples,
+        samples: Vec::new(),
         sample_rate,
         channels,
         duration_seconds,
@@ -593,6 +736,84 @@ pub fn decode_audio_file_with_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_spooled_decode_matches_stereo_and_multichannel() {
+        for channels in [1u16, 2, 4] {
+            let file = tempfile::Builder::new().suffix(".wav").tempfile().unwrap();
+            let frames = 48000usize;
+            let samples: Vec<f32> = (0..frames * channels as usize)
+                .map(|i| ((i / channels as usize) as f32 * 0.03).sin() * (i % channels as usize + 1) as f32)
+                .collect();
+            let data_size = samples.len() as u32 * 4;
+            let mut wav = Vec::new();
+            wav.extend_from_slice(b"RIFF");
+            wav.extend_from_slice(&(36 + data_size).to_le_bytes());
+            wav.extend_from_slice(b"WAVEfmt ");
+            wav.extend_from_slice(&16u32.to_le_bytes());
+            wav.extend_from_slice(&3u16.to_le_bytes()); // IEEE float PCM
+            wav.extend_from_slice(&channels.to_le_bytes());
+            wav.extend_from_slice(&48000u32.to_le_bytes());
+            wav.extend_from_slice(&(48000u32 * channels as u32 * 4).to_le_bytes());
+            wav.extend_from_slice(&(channels * 4).to_le_bytes());
+            wav.extend_from_slice(&32u16.to_le_bytes());
+            wav.extend_from_slice(b"data");
+            wav.extend_from_slice(&data_size.to_le_bytes());
+            for sample in samples { wav.extend_from_slice(&sample.to_le_bytes()); }
+            std::fs::write(file.path(), wav).unwrap();
+            let old = decode_audio_file(file.path()).unwrap();
+            let expected = old.to_whisper_format();
+            let actual = decode_whisper_file_with_progress(file.path(), None, None, || false).unwrap();
+            assert_eq!(actual.samples, expected, "channels={channels}");
+            assert_eq!(actual.duration_seconds, old.duration_seconds);
+            assert_eq!(decode_audio_duration(file.path()).unwrap(), old.duration_seconds);
+            assert_eq!((actual.sample_rate, actual.channels), (16000, 1));
+        }
+    }
+
+    #[test]
+    fn test_spooled_resampling_preserves_long_chunk_boundaries() {
+        let input: Vec<f32> = (0..(48000 * 301))
+            .map(|i| (i as f32 * 0.03).sin() * 0.5).collect();
+        let mut spool = tempfile::tempfile().unwrap();
+        {
+            let mut writer = BufWriter::new(&mut spool);
+            writer.write_all(bytemuck::cast_slice(&input)).unwrap();
+            writer.flush().unwrap();
+        }
+        let expected = chunked_resample_with_progress(&input, 48000, 16000, None);
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        let actual = pool.install(|| {
+            resample_mono_spool(&mut spool, input.len(), 48000, 0.5, None, || false).unwrap()
+        });
+        assert_eq!(actual.len(), expected.len());
+        assert!(actual.iter().zip(&expected).all(|(a, b)| a == &b.clamp(-1.0, 1.0)));
+        assert!((actual.len() as f64 / 16000.0 - 301.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_spooled_resampling_cancels_before_reading() {
+        let mut spool = tempfile::tempfile().unwrap();
+        let error = resample_mono_spool(&mut spool, 48000, 48000, 1.0, None, || true).unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
+    }
+
+    /// Run old/new in separate processes under /usr/bin/time to compare peak RSS.
+    #[test]
+    #[ignore]
+    fn benchmark_import_decode_memory() {
+        let path = std::env::var("TEST_AUDIO_PATH").expect("TEST_AUDIO_PATH required");
+        let started = std::time::Instant::now();
+        let samples = if std::env::var("TEST_DECODE_MODE").as_deref() == Ok("legacy") {
+            decode_audio_file(Path::new(&path)).unwrap().to_whisper_format()
+        } else {
+            decode_whisper_file_with_progress(Path::new(&path), None, None, || false).unwrap().samples
+        };
+        println!("decode_benchmark elapsed_ms={} samples={} duration_seconds={} checksum={}",
+            started.elapsed().as_millis(), samples.len(), samples.len() as f64 / 16000.0,
+            samples.iter().map(|s| *s as f64).sum::<f64>());
+        assert!(!samples.is_empty());
+    }
 
     #[test]
     fn test_decode_he_aac_uses_decoded_rate_not_container_rate() {

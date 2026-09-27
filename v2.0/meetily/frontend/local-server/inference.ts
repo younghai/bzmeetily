@@ -16,6 +16,7 @@ export interface InferenceClient {
   }>;
   transcribe(audio: Blob, context: TranscriptionContext): Promise<readonly LocalSegment[]>;
   translate(text: string, context: readonly TranslationContextTurn[], signal?: AbortSignal): Promise<{ readonly text: string; readonly elapsedMs: number }>;
+  translateBatch?(items: readonly { readonly id: string; readonly start: number; readonly end: number; readonly speakerId: string | null; readonly text: string }[], context: readonly TranslationContextTurn[]): Promise<readonly { readonly id: string; readonly text: string }[]>;
   summarize(transcript: string): Promise<string>;
 }
 
@@ -51,6 +52,7 @@ const whisperResponseSchema = z.object({
 const ollamaResponseSchema = z.object({ message: z.object({ content: z.string() }) });
 const ollamaTagsSchema = z.object({ models: z.array(z.object({ name: z.string() })) });
 const koreanSchema = z.object({ ko: z.string().trim().min(1) });
+const koreanBatchSchema = z.object({ translations: z.array(z.object({ id: z.string(), ko: z.string().trim().min(1) })) });
 const markdownSchema = z.object({ markdown: z.string().trim().min(1) });
 type TranslationRegister = 'polite' | 'plain' | 'preserve';
 
@@ -193,6 +195,21 @@ export class LocalInference implements InferenceClient {
     const startedAt = performance.now();
     const translated = await this.#ollamaQueue.run(() => this.#translateDirect(text, context, signal), signal);
     return translationSchema.parse({ text: translated, elapsedMs: performance.now() - startedAt });
+  }
+
+  async translateBatch(items: readonly { readonly id: string; readonly start: number; readonly end: number; readonly speakerId: string | null; readonly text: string }[], context: readonly TranslationContextTurn[]) {
+    if (items.length === 0) return [];
+    const content = await this.#ollamaQueue.run(() => this.#ollama(
+      '일본어 회의 발언을 시간 순서대로 한국어로 충실히 통역하세요. 각 id를 정확히 한 번씩 유지하고, 발언별 어조·존댓말·질문·수치·고유명사를 보존하세요. speakerId가 null이면 화자를 추측하지 마세요. 이전 문맥은 용어와 생략된 주어 해석에만 사용하세요. 설명이나 추측을 추가하지 마세요.',
+      JSON.stringify({ context, items }),
+      { type: 'object', properties: { translations: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, ko: { type: 'string' } }, required: ['id', 'ko'] } } }, required: ['translations'] },
+    ));
+    const parsed = parseInferenceContent(content, koreanBatchSchema).translations;
+    const byId = new Map(parsed.map((item) => [item.id, item.ko]));
+    if (parsed.length !== items.length || byId.size !== items.length || items.some((item) => !byId.has(item.id))) {
+      throw new LocalServerError('INVALID_TRANSLATION', 502, 'Batch translation omitted or repeated a segment');
+    }
+    return items.map((item) => ({ id: item.id, text: byId.get(item.id)! }));
   }
 
   async summarize(transcript: string): Promise<string> {
