@@ -146,7 +146,8 @@ async function routeApi(
   }
   if (url.pathname === '/api/local/translate' && request.method === 'POST') {
     const input = translationRequestSchema.parse(await readJson(request, 32 * 1024));
-    return json(await options.inference.translate(input.text, input.context, request.signal));
+    return json(await options.inference.translate(input.text, input.context, request.signal, { polish: input.polish }));
+  }
   if (url.pathname === '/api/local/glossary' && request.method === 'GET') {
     return json(glossaryTermListSchema.parse(options.getStore().listGlossary()));
   }
@@ -168,7 +169,6 @@ async function routeApi(
       return new Response(null, { status: 204 });
     }
     throw new LocalServerError('METHOD_NOT_ALLOWED', 405, 'Method not allowed');
-  }
   }
   if (url.pathname === '/api/local/transcribe' && request.method === 'POST') {
     if (request.headers.get('content-type')?.split(';')[0] !== 'audio/wav') throw new LocalServerError('UNSUPPORTED_MEDIA', 415, 'Expected audio/wav');

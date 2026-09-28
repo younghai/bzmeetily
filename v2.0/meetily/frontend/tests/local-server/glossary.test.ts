@@ -122,3 +122,49 @@ describe('glossary store CRUD', () => {
     store.close();
   });
 });
+
+describe('glossary HTTP routes', () => {
+  test('GET /api/local/glossary is routable at the top level', async () => {
+    // Regression: the glossary routes were once nested inside the translate
+    // if-block, which typechecked fine but made GET unreachable (404).
+    const { createLocalApp } = await import('../../local-server/app');
+    const { mkdtempSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const root = mkdtempSync(join(tmpdir(), 'meetily-glossary-route-'));
+    const native = new Database(join(root, 'native.sqlite'), { create: true });
+    native.exec(`
+      CREATE TABLE meetings (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, folder_path TEXT);
+      CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, transcript TEXT NOT NULL, timestamp TEXT NOT NULL);
+      CREATE TABLE summary_processes (meeting_id TEXT PRIMARY KEY, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE transcript_chunks (meeting_id TEXT PRIMARY KEY, transcript_text TEXT NOT NULL, model TEXT NOT NULL, model_name TEXT NOT NULL, created_at TEXT NOT NULL);
+    `);
+    native.close();
+    const store = new LocalStore({
+      nativePath: join(root, 'native.sqlite'),
+      sidecarPath: join(root, 'sidecar.sqlite'),
+      audioDirectory: join(root, 'audio'),
+    });
+    store.initialize();
+    const created = store.createGlossaryTerm({ sourceValue: 'ミティリー', destinationValue: 'Meetily', kind: 'term' });
+    const inference = {
+      status: async () => ({ ready: true, whisper: { ready: true, model: 'm', error: null }, ollama: { ready: true, model: 'm', error: null } }),
+      transcribe: async () => [],
+      translate: async () => ({ text: '번역', elapsedMs: 1 }),
+      summarize: async () => '# 요약',
+    };
+    const app = createLocalApp({
+      port: 3118,
+      getStore: () => store,
+      inference,
+      staticDirectory: root,
+    });
+    const response = await app(new Request('http://127.0.0.1:3118/api/local/glossary', {
+      headers: { host: '127.0.0.1:3118', origin: 'http://127.0.0.1:3118', 'x-meetily-client': 'test' },
+    }));
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toHaveLength(1);
+    expect(body[0].id).toBe(created.id);
+    store.close();
+  });
+});
