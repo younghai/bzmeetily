@@ -7,7 +7,7 @@ use anyhow::Result;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     Arc, Mutex,
 };
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -137,6 +137,42 @@ pub(crate) fn finalize_recording_start(live_interpretation: bool) {
 
 // Global recording manager and transcription task to keep them alive during recording
 static RECORDING_MANAGER: Mutex<Option<RecordingManager>> = Mutex::new(None);
+
+/// Backpressure for the transcription queue: the channel itself stays
+/// unbounded, but the pipeline refuses to enqueue beyond this many pending
+/// VAD segments (each up to ~8s of speech) so a slow machine cannot grow RAM
+/// without limit during long meetings. Excess segments are counted and
+/// dropped — the audio itself is still captured in the recording file.
+pub(crate) const TRANSCRIPTION_QUEUE_CAP: usize = 128;
+pub(crate) static TRANSCRIPTION_QUEUE_DEPTH: AtomicUsize = AtomicUsize::new(0);
+pub(crate) static TRANSCRIPTION_DROPPED: AtomicU64 = AtomicU64::new(0);
+
+/// Enqueue a VAD segment for transcription with backpressure: at CAP pending
+/// segments the segment is dropped (and counted) instead of growing memory
+/// without bound. The receiver decrements the depth counter.
+pub(crate) fn enqueue_transcription(
+    sender: &tokio::sync::mpsc::UnboundedSender<super::AudioChunk>,
+    chunk: super::AudioChunk,
+) -> Result<(), String> {
+    let depth = TRANSCRIPTION_QUEUE_DEPTH.load(Ordering::Relaxed);
+    if depth >= TRANSCRIPTION_QUEUE_CAP {
+        TRANSCRIPTION_DROPPED.fetch_add(1, Ordering::Relaxed);
+        warn!(
+            "Transcription queue full ({} pending, {} dropped) — dropping segment; audio remains in the recording file",
+            depth,
+            TRANSCRIPTION_DROPPED.load(Ordering::Relaxed)
+        );
+        return Err("transcription queue full".to_string());
+    }
+    sender.send(chunk).map_err(|e| e.to_string())?;
+    TRANSCRIPTION_QUEUE_DEPTH.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Receiver-side release of one queued segment (call after each successful recv).
+pub(crate) fn note_transcription_dequeued() {
+    TRANSCRIPTION_QUEUE_DEPTH.fetch_sub(1, Ordering::Relaxed);
+}
 static TRANSCRIPTION_TASK: Mutex<Option<JoinHandle<()>>> = Mutex::new(None);
 
 // Listener ID for proper cleanup - prevents microphone from staying active after recording stops
@@ -993,9 +1029,12 @@ pub async fn stop_recording<R: Runtime>(
             }
         });
 
-        // Wait up to 10 minutes for transcription completion to prevent indefinite hangs
+        // Bounded stop wait: the transcription queue itself is capped
+        // (TRANSCRIPTION_QUEUE_CAP), so a slow machine can no longer pile up
+        // an unbounded backlog. Remaining chunks after the timeout are
+        // abandoned; the audio stays in the recording file.
         match tokio::time::timeout(
-            tokio::time::Duration::from_secs(600), // 10 minutes max
+            tokio::time::Duration::from_secs(90),
             task_handle
         ).await {
             Ok(Ok(())) => {
@@ -1189,7 +1228,7 @@ pub async fn stop_recording<R: Runtime>(
             let meeting_name = manager.get_meeting_name();
 
             match tokio::time::timeout(
-                tokio::time::Duration::from_secs(300), // 5 minutes max for file I/O
+                tokio::time::Duration::from_secs(120), // Bounded file-I/O wait
                 manager.save_recording_only(&app)
             ).await {
                 Ok(Ok(_)) => {
@@ -1280,7 +1319,7 @@ pub fn is_live_interpretation() -> bool {
 /// Get recording statistics
 pub async fn get_transcription_status() -> TranscriptionStatus {
     TranscriptionStatus {
-        chunks_in_queue: 0,
+        chunks_in_queue: TRANSCRIPTION_QUEUE_DEPTH.load(Ordering::Relaxed),
         is_processing: IS_RECORDING.load(Ordering::SeqCst),
         last_activity_ms: 0,
     }

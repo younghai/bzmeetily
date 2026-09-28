@@ -40,6 +40,9 @@ const getStore = (): LocalStore => {
   return store;
 };
 
+// The glossary is re-read on every inference call so edits apply to the next
+// chunk/translation without restarting the server (the store may still be
+// initializing on first launch — return an empty list until then).
 const inference = new LocalInference({
   whisperUrl: config.whisperUrl,
   whisperModel: config.whisperModel,
@@ -47,6 +50,13 @@ const inference = new LocalInference({
   ollamaModel: config.ollamaModel,
   timeoutMs: config.inferenceTimeoutMs,
   queueLimit: config.inferenceQueueLimit,
+  getGlossary: () => {
+    try {
+      return getStore().listGlossary();
+    } catch {
+      return [];
+    }
+  },
 });
 const server = Bun.serve({
   hostname: '127.0.0.1',

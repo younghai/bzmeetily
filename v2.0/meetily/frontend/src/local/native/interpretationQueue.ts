@@ -13,6 +13,8 @@ export type CaptionSource = {
   readonly id: string;
   readonly sourceText: string;
   readonly timestamp: string;
+  /** Dominant speaker of the utterance ("mic" = local user, "system" = remote). */
+  readonly speaker?: 'mic' | 'system';
 };
 
 export type InterpretationItem = CaptionSource & {

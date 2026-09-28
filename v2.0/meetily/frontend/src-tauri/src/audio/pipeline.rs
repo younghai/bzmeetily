@@ -716,6 +716,9 @@ pub struct AudioPipeline {
     /// webview-driven live interpretation can run its own chunker on the
     /// continuous mixed signal.
     raw_mix_sender: Option<mpsc::Sender<AudioChunk>>,
+    /// Last speaker attribution (dominant source) carried across ambiguous
+    /// mixing windows so short crosstalk does not flip the label.
+    last_window_source: super::recording_state::DeviceType,
     // Performance optimization: reduce logging frequency
     last_summary_time: std::time::Instant,
     processed_chunks: u64,
@@ -799,6 +802,7 @@ impl AudioPipeline {
             vad_processor,
             sample_rate,
             chunk_id_counter: 0,
+            last_window_source: super::recording_state::DeviceType::Microphone,
             raw_mix_sender,
             // Performance optimization: reduce logging frequency
             last_summary_time: std::time::Instant::now(),
@@ -871,6 +875,14 @@ impl AudioPipeline {
                     // STEP 2: Mix audio in fixed windows when both streams have sufficient data
                     while self.ring_buffer.can_mix() {
                         if let Some((mic_window, sys_window)) = self.ring_buffer.extract_window() {
+                            // Speaker attribution before mixing: label each window
+                            // by the dominant source (mic = local user, system =
+                            // remote party). Ambiguous windows keep the previous
+                            // label so short crosstalk does not flip speakers.
+                            let window_source =
+                                dominant_source(&mic_window, &sys_window, self.last_window_source);
+                            self.last_window_source = window_source.clone();
+
                             // Simple mixing without aggressive ducking
                             let mixed_clean = self.mixer.mix_window(&mic_window, &sys_window);
 
@@ -895,13 +907,15 @@ impl AudioPipeline {
                                                 sample_rate: 16000,
                                                 timestamp: segment.start_timestamp_ms / 1000.0,
                                                 chunk_id: self.chunk_id_counter,
-                                                device_type: DeviceType::Microphone,  // Mixed audio
+                                                device_type: window_source.clone(),  // Dominant speaker
                                             };
 
-                                            if let Err(e) = self.transcription_sender.send(transcription_chunk) {
-                                                warn!("Failed to send VAD segment: {}", e);
-                                            } else {
-                                                self.chunk_id_counter += 1;
+                                            match super::recording_commands::enqueue_transcription(
+                                                &self.transcription_sender,
+                                                transcription_chunk,
+                                            ) {
+                                                Ok(()) => self.chunk_id_counter += 1,
+                                                Err(e) => warn!("VAD segment not enqueued: {}", e),
                                             }
                                         } else {
                                             debug!("⏭️ Dropping short VAD segment: {:.1}ms ({} samples < 800)",
@@ -921,7 +935,7 @@ impl AudioPipeline {
                                     sample_rate: self.sample_rate,
                                     timestamp: chunk.timestamp,
                                     chunk_id: self.chunk_id_counter,
-                                    device_type: DeviceType::Microphone,  // Mixed audio
+                                    device_type: window_source.clone(),  // Dominant speaker
                                 };
                                 let _ = sender.send(recording_chunk);
                             }
@@ -933,7 +947,7 @@ impl AudioPipeline {
                                     sample_rate: self.sample_rate,
                                     timestamp: chunk.timestamp,
                                     chunk_id: self.chunk_id_counter,
-                                    device_type: DeviceType::Microphone,
+                                    device_type: window_source.clone(),
                                 };
                                 if sender.send(tap_chunk).await.is_err() {
                                     warn!("Live PCM receiver closed; disabling the raw mixed tap");
@@ -983,10 +997,12 @@ impl AudioPipeline {
                             device_type: DeviceType::Microphone,
                         };
 
-                        if let Err(e) = self.transcription_sender.send(transcription_chunk) {
-                            warn!("Failed to send final VAD segment: {}", e);
-                        } else {
-                            self.chunk_id_counter += 1;
+                        match super::recording_commands::enqueue_transcription(
+                            &self.transcription_sender,
+                            transcription_chunk,
+                        ) {
+                            Ok(()) => self.chunk_id_counter += 1,
+                            Err(e) => warn!("Final VAD segment not enqueued: {}", e),
                         }
                     } else {
                         info!("⏭️ Skipping short final segment: {:.1}ms ({} samples < 800)",
@@ -1179,5 +1195,65 @@ mod tests {
         // uninterrupted speech. Batch import/retranscription use 2000ms.
         // See #679 and #756.
         assert_eq!(VAD_REDEMPTION_TIME_MS, 500);
+    }
+}
+
+/// Speaker attribution for a mixing window: the clearly louder source wins
+/// (>= ~3.5 dB over the other); otherwise the previous label is kept so
+/// balanced crosstalk does not flip speakers mid-utterance.
+fn dominant_source(
+    mic_window: &[f32],
+    sys_window: &[f32],
+    previous: super::recording_state::DeviceType,
+) -> super::recording_state::DeviceType {
+    use super::recording_state::DeviceType;
+    fn rms(samples: &[f32]) -> f32 {
+        if samples.is_empty() {
+            return 0.0;
+        }
+        (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+    }
+    let (mic_rms, sys_rms) = (rms(mic_window), rms(sys_window));
+    const RATIO: f32 = 1.5;
+    if mic_rms >= sys_rms * RATIO {
+        DeviceType::Microphone
+    } else if sys_rms >= mic_rms * RATIO {
+        DeviceType::System
+    } else {
+        previous
+    }
+}
+
+#[cfg(test)]
+mod speaker_tests {
+    use super::super::recording_state::DeviceType;
+    use super::dominant_source;
+
+    #[test]
+    fn louder_source_wins_and_ambiguity_keeps_previous() {
+        let loud_mic = vec![0.5; 480];
+        let quiet_sys = vec![0.01; 480];
+        assert!(matches!(
+            dominant_source(&loud_mic, &quiet_sys, DeviceType::System),
+            DeviceType::Microphone
+        ));
+        assert!(matches!(
+            dominant_source(&quiet_sys, &loud_mic, DeviceType::Microphone),
+            DeviceType::System
+        ));
+
+        // Balanced crosstalk keeps the previous label.
+        let both = vec![0.2; 480];
+        assert!(matches!(
+            dominant_source(&both, &both, DeviceType::System),
+            DeviceType::System
+        ));
+
+        // Silence on one side falls through to the active side.
+        let silence = vec![0.0; 480];
+        assert!(matches!(
+            dominant_source(&silence, &both, DeviceType::Microphone),
+            DeviceType::System
+        ));
     }
 }

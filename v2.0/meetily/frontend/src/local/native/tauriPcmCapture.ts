@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type { AudioChunk } from '../audio/chunker';
 import type { CaptureEndReason, CaptureResult } from '../audio/capture';
 import { LiveAudioChunker } from '../audio/liveChunker';
+import { SpeakerTracker, type Speaker } from './speakerTracker';
 
 export type TauriCaptureSource = 'microphone' | 'display' | 'both';
 
@@ -11,6 +12,7 @@ type PcmPayload = {
   readonly data?: string;
   readonly sampleRate?: number;
   readonly level?: number;
+  readonly speaker?: Speaker;
 };
 
 export type TauriCaptureOptions = {
@@ -54,6 +56,7 @@ export async function startTauriPcmCapture(options: TauriCaptureOptions): Promis
   let flushed = false;
   let chunker: LiveAudioChunker | null = null;
   let sampleCount = 0;
+  const speakerTracker = new SpeakerTracker();
   const startedAt = performance.now();
   let unlisten: UnlistenFn | null = null;
   let unlistenError: UnlistenFn | null = null;
@@ -76,7 +79,16 @@ export async function startTauriPcmCapture(options: TauriCaptureOptions): Promis
     const sampleRate = payload.sampleRate ?? 48000;
     const samples = samplesFromPcm16(decodeBase64(payload.data));
     if (samples.length === 0) return;
-    chunker ??= new LiveAudioChunker({ sampleRate, onChunk: options.onChunk });
+    if (payload.speaker === 'mic' || payload.speaker === 'system') {
+      speakerTracker.push({ speaker: payload.speaker, samples: samples.length });
+    }
+    chunker ??= new LiveAudioChunker({
+      sampleRate,
+      onChunk: (chunk) => {
+        options.onChunk({ ...chunk, speaker: speakerTracker.current() });
+        if (chunk.final) speakerTracker.reset();
+      },
+    });
     sampleCount += samples.length;
     options.onLevel?.(payload.level ?? 0);
     chunker.push(samples);

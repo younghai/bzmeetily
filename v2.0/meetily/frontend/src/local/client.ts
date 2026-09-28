@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
 import {
+  updateGlossaryTermSchema,
+  createGlossaryTermSchema,
+  glossaryTermSchema,
+  glossaryTermListSchema,
   chunkResultSchema,
   createMeetingSchema,
   importResultSchema,
@@ -11,6 +15,7 @@ import {
   summarySchema,
   translationRequestSchema,
   translationSchema,
+  type GlossaryTerm,
 } from './contracts';
 import type { ImportJob, MeetingDetail, ServiceStatus, SourceLanguage, TranslationContextTurn } from './contracts';
 import type { AudioChunk } from './audio';
@@ -214,12 +219,53 @@ export function requestTranslation(
   text: string,
   context: readonly TranslationContextTurn[] = [],
   signal?: AbortSignal,
+  options?: { readonly polish?: boolean },
 ) {
-  const body = translationRequestSchema.parse({ text, sourceLanguage: 'ja', targetLanguage: 'ko', context });
+  const body = translationRequestSchema.parse({ text, sourceLanguage: 'ja', targetLanguage: 'ko', context, polish: options?.polish });
   return requestLiveJson('/translate', translationSchema, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     signal,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Glossary
+// ---------------------------------------------------------------------------
+
+export function listGlossary(signal?: AbortSignal): Promise<readonly GlossaryTerm[]> {
+  return requestJson('/glossary', glossaryTermListSchema, { signal });
+}
+
+export function createGlossaryTerm(
+  sourceValue: string,
+  destinationValue: string,
+  kind: 'term' | 'replacement',
+) {
+  const body = createGlossaryTermSchema.parse({ sourceValue, destinationValue, kind });
+  return requestJson('/glossary', glossaryTermSchema, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export function setGlossaryTermEnabled(id: string, enabled: boolean): Promise<GlossaryTerm> {
+  const body = updateGlossaryTermSchema.parse({ enabled });
+  return requestJson(`/glossary/${encodeURIComponent(id)}`, glossaryTermSchema, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteGlossaryTerm(id: string): Promise<void> {
+  const response = await fetch(`${apiBase()}/glossary/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: { 'X-Meetily-Client': 'local' },
+  });
+  if (!response.ok && response.status !== 204) {
+    throw await responseError(response);
+  }
 }

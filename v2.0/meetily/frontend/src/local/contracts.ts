@@ -50,7 +50,32 @@ export const translationRequestSchema = z.object({
   sourceLanguage: z.literal('ja'),
   targetLanguage: z.literal('ko'),
   context: z.array(translationContextTurnSchema).max(2).default([]),
+  /** Clean fillers/repeats in the Korean output (default true). */
+  polish: z.boolean().optional(),
 });
+export const glossaryIdSchema = z.string().regex(/^glossary-[a-zA-Z0-9-]{8,80}$/);
+export const glossaryTermSchema = z.object({
+  id: glossaryIdSchema,
+  sourceValue: z.string().trim().min(1).max(120),
+  destinationValue: z.string().trim().min(1).max(120),
+  kind: z.enum(['term', 'replacement']),
+  enabled: z.boolean(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type GlossaryTerm = z.infer<typeof glossaryTermSchema>;
+export const glossaryTermListSchema = z.array(glossaryTermSchema);
+export const createGlossaryTermSchema = z.object({
+  sourceValue: z.string().trim().min(1).max(120),
+  destinationValue: z.string().trim().min(1).max(120),
+  kind: z.enum(['term', 'replacement']).default('term'),
+});
+export const updateGlossaryTermSchema = z.object({
+  sourceValue: z.string().trim().min(1).max(120).optional(),
+  destinationValue: z.string().trim().min(1).max(120).optional(),
+  kind: z.enum(['term', 'replacement']).optional(),
+  enabled: z.boolean().optional(),
+}).refine((value) => Object.keys(value).length > 0, { message: 'Nothing to update' });
 export const translationSchema = z.object({ text: z.string(), elapsedMs: z.number().nonnegative() });
 export const summarySchema = z.object({ markdown: z.string() });
 export const importResultSchema = z.object({ meeting: meetingDetailSchema });

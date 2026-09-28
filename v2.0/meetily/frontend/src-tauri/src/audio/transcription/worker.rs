@@ -314,7 +314,13 @@ pub fn start_transcription_task<R: Runtime>(
 
         // Main dispatcher: receive chunks and distribute to workers
         let mut receiver = transcription_receiver;
-        while let Some(chunk) = receiver.recv().await {
+        while let Some(chunk) = {
+            let chunk = receiver.recv().await;
+            if chunk.is_some() {
+                super::super::recording_commands::note_transcription_dequeued();
+            }
+            chunk
+        } {
             let queued = chunks_queued.fetch_add(1, Ordering::SeqCst) + 1;
             info!(
                 "📥 Dispatching chunk {} to workers (total queued: {})",

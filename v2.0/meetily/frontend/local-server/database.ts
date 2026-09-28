@@ -8,8 +8,10 @@ import {
   languageSchema,
   meetingDetailSchema,
   meetingSchema,
+  glossaryTermSchema,
   importJobSchema,
   type ImportJob,
+  type GlossaryTerm,
   type LocalMeeting,
   type LocalSegment,
   type MeetingDetail,
@@ -83,6 +85,17 @@ export class LocalStore {
         stage TEXT NOT NULL, completed_chunks INTEGER NOT NULL DEFAULT 0,
         total_chunks INTEGER NOT NULL DEFAULT 0, error TEXT,
         metrics_json TEXT NOT NULL, updated_at TEXT NOT NULL
+      )
+    `);
+    this.#database.exec(`
+      CREATE TABLE IF NOT EXISTS local_meta.glossary_terms (
+        id TEXT PRIMARY KEY,
+        source_value TEXT NOT NULL,
+        destination_value TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('term', 'replacement')),
+        enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
       )
     `);
     const audioColumns = this.#database.query<{ readonly name: string }, []>('PRAGMA local_meta.table_info(audio_files)').all();
@@ -374,6 +387,70 @@ export class LocalStore {
       await rm(destination, { force: true });
       throw error;
     }
+  }
+
+
+  // -------------------------------------------------------------------------
+  // Glossary (proper nouns / replacement rules shared by ASR + translation)
+  // -------------------------------------------------------------------------
+
+  listGlossary(): readonly GlossaryTerm[] {
+    const rows = this.#database.query<{
+      readonly id: string; readonly sourceValue: string; readonly destinationValue: string;
+      readonly kind: 'term' | 'replacement'; readonly enabled: number;
+      readonly createdAt: string; readonly updatedAt: string;
+    }, []>(`SELECT id, source_value AS sourceValue, destination_value AS destinationValue,
+      kind, enabled, created_at AS createdAt, updated_at AS updatedAt
+      FROM local_meta.glossary_terms ORDER BY created_at DESC, id`).all();
+    return rows.map((row) => glossaryTermSchema.parse({ ...row, enabled: row.enabled === 1 }));
+  }
+
+  createGlossaryTerm(input: { sourceValue: string; destinationValue: string; kind: 'term' | 'replacement' }): GlossaryTerm {
+    const id = `glossary-${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+    this.#database.run(
+      'INSERT INTO local_meta.glossary_terms (id, source_value, destination_value, kind, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)',
+      [id, input.sourceValue, input.destinationValue, input.kind, now, now],
+    );
+    return glossaryTermSchema.parse({
+      id, sourceValue: input.sourceValue, destinationValue: input.destinationValue,
+      kind: input.kind, enabled: true, createdAt: now, updatedAt: now,
+    });
+  }
+
+  updateGlossaryTerm(
+    id: string,
+    patch: { sourceValue?: string; destinationValue?: string; kind?: 'term' | 'replacement'; enabled?: boolean },
+  ): GlossaryTerm | null {
+    const current = this.#database.query<{ readonly id: string }, [string]>(
+      'SELECT id FROM local_meta.glossary_terms WHERE id = ?',
+    ).get(id);
+    if (current === null) return null;
+    const now = new Date().toISOString();
+    this.#database.run(
+      `UPDATE local_meta.glossary_terms SET
+        source_value = COALESCE(?, source_value),
+        destination_value = COALESCE(?, destination_value),
+        kind = COALESCE(?, kind),
+        enabled = COALESCE(?, enabled),
+        updated_at = ?
+      WHERE id = ?`,
+      [patch.sourceValue ?? null, patch.destinationValue ?? null, patch.kind ?? null,
+       patch.enabled === undefined ? null : (patch.enabled ? 1 : 0), now, id],
+    );
+    const row = this.#database.query<{
+      readonly id: string; readonly sourceValue: string; readonly destinationValue: string;
+      readonly kind: 'term' | 'replacement'; readonly enabled: number;
+      readonly createdAt: string; readonly updatedAt: string;
+    }, [string]>(`SELECT id, source_value AS sourceValue, destination_value AS destinationValue,
+      kind, enabled, created_at AS createdAt, updated_at AS updatedAt
+      FROM local_meta.glossary_terms WHERE id = ?`).get(id);
+    if (row === null) return null;
+    return glossaryTermSchema.parse({ ...row, enabled: row.enabled === 1 });
+  }
+
+  deleteGlossaryTerm(id: string): boolean {
+    return this.#database.run('DELETE FROM local_meta.glossary_terms WHERE id = ?', [id]).changes > 0;
   }
 
   getAudio(meetingId: string): { readonly file: ReturnType<typeof Bun.file>; readonly mimeType: string } | null {

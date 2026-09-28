@@ -14,6 +14,8 @@ type Options = {
   readonly status: ServiceStatus | null;
   /** Alternate audio source (e.g. Tauri native capture). Defaults to browser capture. */
   readonly startCaptureImpl?: (options: StartCaptureOptions) => Promise<CaptureSession>;
+  /** Clean fillers/repeats in the Korean translation (persisted by callers). */
+  readonly polish?: boolean;
 };
 
 const MAX_PENDING_CHUNKS = 12;
@@ -32,7 +34,9 @@ function timestamp(seconds: number): string {
 }
 
 // allow: SIZE_OK — live capture lifecycle and its coordinated queues form one state machine.
-export function useLiveInterpretation({ status, startCaptureImpl }: Options) {
+export function useLiveInterpretation({ status, startCaptureImpl, polish = true }: Options) {
+  const polishRef = useRef(polish);
+  polishRef.current = polish;
   const [phase, setPhase] = useState<LiveInterpretationPhase>('idle');
   const [source, setSourceState] = useState<CaptureSource>('both');
   const [level, setLevel] = useState(0);
@@ -52,7 +56,9 @@ export function useLiveInterpretation({ status, startCaptureImpl }: Options) {
 
   if (translationQueueRef.current === null) {
     translationQueueRef.current = new InterpretationQueue(
-      ({ text, context }, signal) => requestTranslation(text, context, signal),
+          // polishRef: the queue is created once; read the flag per request so
+      // toggling mid-session applies to the next caption.
+      ({ text, context }, signal) => requestTranslation(text, context, signal, { polish: polishRef.current }),
       (snapshot) => {
         if (mountedRef.current) setTranslationSnapshot(snapshot);
       },
@@ -152,6 +158,7 @@ export function useLiveInterpretation({ status, startCaptureImpl }: Options) {
         id: `live-${chunk.sequence}`,
         sourceText,
         timestamp: timestamp(chunk.start),
+        speaker: chunk.speaker,
       });
     }, chunk => chunk.sequence);
     asrQueueRef.current = queue;

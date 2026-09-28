@@ -1,15 +1,16 @@
 'use client';
 
-import { ArrowRight, Languages, Mic } from 'lucide-react';
+import { ArrowRight, BookMarked, Languages, Mic } from 'lucide-react';
 
 export type SessionMode = 'interpretation' | 'recording';
 
 type Props = {
   readonly onSelect: (mode: SessionMode) => void;
   readonly disabled?: boolean;
+  readonly onOpenGlossary?: () => void;
 };
 
-export function SessionModeChooser({ onSelect, disabled = false }: Props) {
+export function SessionModeChooser({ onSelect, disabled = false, onOpenGlossary }: Props) {
   return (
     <section aria-labelledby="session-mode-heading" className="mx-auto flex min-h-[70vh] w-full max-w-3xl flex-col justify-center px-4 py-8 text-slate-900 [word-break:keep-all] sm:px-8">
       <p className="text-sm font-semibold tracking-wide text-blue-700">Meetily</p>
@@ -29,6 +30,18 @@ export function SessionModeChooser({ onSelect, disabled = false }: Props) {
           <span className="mt-5 flex items-center gap-2 text-sm font-semibold text-slate-700">회의 화면으로 <ArrowRight aria-hidden="true" className="h-4 w-4" /></span>
         </button>
       </div>
+      {onOpenGlossary && (
+        <div className="mt-6 flex justify-center">
+          <button
+            type="button"
+            onClick={onOpenGlossary}
+            className="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 outline-none transition-colors hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-blue-600"
+          >
+            <BookMarked aria-hidden="true" className="h-4 w-4 text-slate-500" />
+            용어집 관리{disabled ? '' : ' · 고유명사 정확도'}
+          </button>
+        </div>
+      )}
     </section>
   );
 }

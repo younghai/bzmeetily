@@ -7,6 +7,8 @@ export type AudioChunk = {
   readonly duration: number;
   readonly blob: Blob;
   readonly final?: boolean;
+  /** Dominant speaker of the utterance ("mic" = local user, "system" = remote). */
+  readonly speaker?: 'mic' | 'system';
 };
 
 type AudioChunkerOptions = {

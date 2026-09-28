@@ -163,25 +163,44 @@ say "Step 5/5 — checksums and release notes"
 cd "$RELEASE_DIR"
 FINAL_DMG="${PRODUCT_NAME}_${VERSION}_aarch64.dmg"
 shasum -a 256 "$FINAL_DMG" > "$FINAL_DMG.sha256"
-if [[ ! -e "RELEASE-NOTES-$VERSION.md" ]]; then
-  if [[ "$MODE" == "dist" ]]; then
-    RELEASE_STATUS="Developer ID signed and notarized build"
-  else
-    RELEASE_STATUS="ad-hoc development candidate; not approved for general distribution"
-  fi
-  cat > "RELEASE-NOTES-$VERSION.md" <<EOF
+cat > "RELEASE-NOTES-$VERSION.md" <<EOF
 # Meetily2 $VERSION
 
-Status: $RELEASE_STATUS
+Apple Silicon(macOS 14.2+)용 로컬 실시간 통역 앱.
 
-SHA-256: $(shasum -a 256 "$FINAL_DMG")
+## 설치 흐름
+1. DMG를 열고 Meetily2를 Applications로 복사
+2. 앱 실행 (개발용 ad-hoc DMG는 Gatekeeper 경고가 표시될 수 있음)
+3. 모델 다운로드 마법사 (통역용 Whisper + Qwen 외에 회의록용 모델도 설치될 수 있음. 첫 설치 전 여유 공간 15GB 권장)
+4. 마이크·컴퓨터 소리 권한 허용
+5. 실시간 통역 또는 회의 녹음 선택. 통역 화면은 왼쪽 일본어 전사, 오른쪽 한국어 통역
 
-Before distribution, add the tested changes, native/localhost E2E results, known issues,
-and clean-Mac validation outcome from the three review passes.
+## 모델 프로바이더
+- **DeepSeek API 추가** — 설정에서 DeepSeek 선택 후 API 키 입력, 모델 deepseek-flash(V4.1-Flash) / deepseek-chat / deepseek-reasoner
+- **OpenAI 모델 목록 최신화** — gpt-5.4 / gpt-5.4-mini / gpt-5.3 / gpt-5.1 / gpt-5 등
+
+## 화자 표시·안정화
+- 화자 표시 — 마이크(나)/컴퓨터 소리(상대) 우세량으로 발언별 배지 표시, 자막 내보내기에 포함
+- 외부 URL 열기 http(s) 전용 검증, 파일시스템 권한 축소 (fs read-all/write-all 제거)
+- 모델 다운로드 중단 시 이어받기(전송 중단만 보존, 시작 실패는 정리)
+- 전사 대기열 상한(128세그먼트)·드롭 계수·실측 대기열 상태 표시, 녹음 중지 대기 90초/저장 120초로 상한
+- 지연 벤치마크 스크립트(scripts/benchmark.sh)
+
+## 보안·안정성 수정
+- 파일 읽기/쓰기 Tauri 명령을 회의 저장 위치로 한정 (전체 디스크 접근 차단)
+- 중지 버튼 이중 호출 시 전사 유실 방지(단일 중지 게이트)
+- API 키가 콘솔 로그에 출력되지 않도록 마스킹
+- 로컬 서비스 감시자가 재시작 실패 시 지수 백오프로 5회 재시도
+- 첫 실행 마법사가 모델 부재 시 정상 표시되도록 수정
+
+## 구성
+- 앱 + localhost 서버 + Whisper + Ollama 모두 내장, 별도 개발 도구 불필요
+- 모델은 첫 실행 때 다운로드되어 사용자 데이터 영역에 저장 (앱 업데이트 후 재사용)
+- 이전 대화를 시간순 미리보기에서 선택하면 일본어·한국어 두 창이 해당 구간으로 이동
+- 통역 모델은 마지막 요청 후 5분 동안 유지되어 사용하지 않을 때 메모리 반환
+- 네이티브 음성 스트림은 소비 속도보다 빠르게 쌓이면 과도한 메모리 증가 대신 오류를 표시하고 안전하게 중지
+- 서명: $(/usr/bin/codesign -dv "$APP_PATH" 2>&1 | grep "Authority" | head -1 || echo "ad-hoc (dev)")
 EOF
-else
-  say "Preserving reviewed RELEASE-NOTES-$VERSION.md"
-fi
 
 say "Done."
 echo

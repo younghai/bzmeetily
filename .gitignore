@@ -30,3 +30,4 @@ v2.0/meetily/frontend/build/
 **/tsconfig.tsbuildinfo
 v2.0/release/
 reviews/evidence/
+frontend/bun.lock

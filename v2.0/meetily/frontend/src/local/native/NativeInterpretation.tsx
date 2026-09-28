@@ -1,6 +1,6 @@
 'use client';
 
-import { Copy, Download, LoaderCircle, Mic, Square } from 'lucide-react';
+import { Copy, Download, LoaderCircle, Mic, Sparkles, Square } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 
@@ -11,14 +11,17 @@ import { InterpretationView } from '@/local/components/InterpretationView';
 import { useLiveInterpretation } from '@/local/components/useLiveInterpretation';
 import { getServiceStatus } from '@/local/client';
 import type { ServiceStatus } from '@/local/contracts';
+import { usePolishPreference } from '@/local/components/usePolishPreference';
 import type { StartCaptureOptions } from '@/local/audio';
 
 import { startTauriPcmCapture, type TauriCaptureSource } from './tauriPcmCapture';
 
-function captionText(items: readonly { sourceText: string; translation: string | null; error: string | null; timestamp: string }[]): string {
+function captionText(items: readonly { sourceText: string; translation: string | null; error: string | null; timestamp: string; speaker?: 'mic' | 'system' }[]): string {
   return items.map((item) => {
     const korean = item.translation ?? `[통역 오류: ${item.error ?? '처리 중'}]`;
-    return `[${item.timestamp}] JA: ${item.sourceText}\n[${item.timestamp}] KO: ${korean}`;
+    const speaker = item.speaker === 'system' ? '상대' : item.speaker === 'mic' ? '나' : '';
+    const prefix = speaker === '' ? '' : `${speaker} · `;
+    return `[${item.timestamp}] ${prefix}JA: ${item.sourceText}\n[${item.timestamp}] ${prefix}KO: ${korean}`;
   }).join('\n\n');
 }
 
@@ -76,9 +79,11 @@ export function NativeInterpretation({ active, onClose }: Props) {
     });
   }, [selectedDevices.micDevice, selectedDevices.systemDevice]);
 
+  const [polish, setPolish] = usePolishPreference();
   const live = useLiveInterpretation({
     status,
     startCaptureImpl: startTauriCapture,
+    polish,
   });
 
   const start = async () => {
@@ -153,6 +158,16 @@ export function NativeInterpretation({ active, onClose }: Props) {
           <option value="display">컴퓨터 소리</option>
           <option value="microphone">마이크</option>
         </select>
+        <Button
+          variant="outline"
+          size="sm"
+          className={'h-11 ' + (polish ? 'border-blue-600 bg-blue-50 text-blue-800 hover:bg-blue-100' : '')}
+          aria-pressed={polish}
+          title={polish ? '정제 켜짐: 필러·반복을 제거한 자연스러운 통역' : '정제 꺼짐: 원문에 충실한 통역'}
+          onClick={() => setPolish(!polish)}
+        >
+          <Sparkles className="h-4 w-4" /> 정제
+        </Button>
         {live.phase === 'recording' ? (
           <Button variant="destructive" size="sm" className="h-11" onClick={() => void live.stop()}>
             <Square className="h-4 w-4" /> 통역 중지

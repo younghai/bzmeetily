@@ -4,7 +4,7 @@ set -euo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd -- "$script_dir/../../.." && pwd)
-cidre_root=${CIDRE_ROOT:-$HOME/.cargo/git/checkouts/cidre-2c979cd9b38fdb3d/a9587fa/cidre}
+cidre_root=${CIDRE_ROOT:-/Users/young2026/.cargo/git/checkouts/cidre-2c979cd9b38fdb3d/a9587fa/cidre}
 test_root=${TEST_ROOT:-"$repo_root/target/native-build-support-test"}
 
 cd "$cidre_root"

@@ -56,6 +56,9 @@ struct PcmEvent<'a> {
     data: &'a str,
     sample_rate: u32,
     level: f32,
+    /// Dominant source of this window, from the Rust mixing pipeline:
+    /// "mic" = local user, "system" = remote party.
+    speaker: &'static str,
 }
 
 /// Start streaming mixed PCM to the webview. Does NOT start Rust-side ASR;
@@ -159,6 +162,10 @@ pub async fn start_live_pcm_stream<R: Runtime>(
                 data: &local_runtime::encode_base64(&bytes),
                 sample_rate: chunk.sample_rate,
                 level,
+                speaker: match chunk.device_type {
+                    super::RecordingDeviceType::System => "system",
+                    _ => "mic",
+                },
             };
             if let Err(e) = app.emit("live-pcm", event) {
                 error!("Failed to emit PCM chunk: {e}");

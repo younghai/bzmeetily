@@ -3,10 +3,60 @@ import { z } from 'zod';
 import {
   serviceStatusSchema,
   translationSchema,
+  type GlossaryTerm,
   type LocalSegment,
   type TranslationContextTurn,
 } from '../src/local/contracts';
 import { LocalServerError } from './errors';
+
+// ---------------------------------------------------------------------------
+// Glossary helpers (exported for tests)
+// ---------------------------------------------------------------------------
+
+const WHISPER_PROMPT_BUDGET = 700;
+
+/** Prompt injected into whisper's `prompt` field so recurring proper nouns
+ * are transcribed with the right spelling instead of being re-guessed. */
+export function buildWhisperGlossaryPrompt(terms: readonly GlossaryTerm[]): string {
+  const entries = terms
+    .filter((term) => term.enabled)
+    .map((term) => (term.sourceValue === term.destinationValue
+      ? term.destinationValue
+      : `${term.sourceValue}（${term.destinationValue}）`));
+  if (entries.length === 0) return '';
+  let prompt = `固有名詞・専門用語の正しい表記に注意して書き起こしてください。用語集: ${entries.join('、')}`;
+  if (prompt.length > WHISPER_PROMPT_BUDGET) {
+    prompt = `${prompt.slice(0, WHISPER_PROMPT_BUDGET - 1)}…`;
+  }
+  return prompt;
+}
+
+/** Longest-first literal replacement so overlapping rules cannot corrupt
+ * each other (e.g. 「ミティリー」 before 「ミティ」). */
+export function applyReplacementRules(text: string, terms: readonly GlossaryTerm[]): string {
+  const rules = terms
+    .filter((term) => term.enabled && term.kind === 'replacement' && term.sourceValue !== term.destinationValue)
+    .sort((a, b) => b.sourceValue.length - a.sourceValue.length);
+  let result = text;
+  for (const rule of rules) result = result.split(rule.sourceValue).join(rule.destinationValue);
+  return result;
+}
+
+/** Appends glossary spelling and the optional filler/repeat cleanup rule to a
+ * translation system prompt (single LLM call — no extra latency). */
+export function appendGlossaryAndPolish(baseSystem: string, terms: readonly GlossaryTerm[], polish: boolean): string {
+  const parts = [baseSystem];
+  if (polish) {
+    parts.push('출력은 통역 문장만 담습니다. 필러(えー、あのー、そのー 등), 무의미한 반복, 말하다 만 어구는 제거하고 내용은 요약하거나 생략하지 마세요.');
+  }
+  const glossary = terms
+    .filter((term) => term.enabled)
+    .map((term) => `${term.sourceValue} → ${term.destinationValue}`);
+  if (glossary.length > 0) {
+    parts.push(`고유명사·용어 표기(이 표기를 따르세요): ${glossary.join(' / ')}`);
+  }
+  return parts.join(' ');
+}
 
 export interface InferenceClient {
   status(): Promise<{
@@ -15,7 +65,7 @@ export interface InferenceClient {
     readonly ollama: { readonly ready: boolean; readonly model: string; readonly error: string | null };
   }>;
   transcribe(audio: Blob, context: TranscriptionContext): Promise<readonly LocalSegment[]>;
-  translate(text: string, context: readonly TranslationContextTurn[], signal?: AbortSignal): Promise<{ readonly text: string; readonly elapsedMs: number }>;
+  translate(text: string, context: readonly TranslationContextTurn[], signal?: AbortSignal, options?: { readonly polish?: boolean }): Promise<{ readonly text: string; readonly elapsedMs: number }>;
   translateBatch?(items: readonly { readonly id: string; readonly start: number; readonly end: number; readonly speakerId: string | null; readonly text: string }[], context: readonly TranslationContextTurn[]): Promise<readonly { readonly id: string; readonly text: string }[]>;
   summarize(transcript: string): Promise<string>;
 }
@@ -37,6 +87,8 @@ type InferenceOptions = {
   readonly ollamaModel: string;
   readonly timeoutMs: number;
   readonly queueLimit: number;
+  /** Live glossary feed (re-read per request so edits apply immediately). */
+  readonly getGlossary?: () => readonly GlossaryTerm[];
 };
 
 const whisperResponseSchema = z.object({
@@ -145,12 +197,15 @@ export class LocalInference implements InferenceClient {
   }
 
   async transcribe(audio: Blob, context: TranscriptionContext): Promise<readonly LocalSegment[]> {
+    const glossary = this.#options.getGlossary?.() ?? [];
+    const whisperPrompt = buildWhisperGlossaryPrompt(glossary);
     const result = await this.#whisperQueue.run(async () => {
       const form = new FormData();
       form.set('file', audio, 'chunk.wav');
       form.set('response_format', 'verbose_json');
       form.set('language', context.language);
       form.set('temperature', '0');
+      if (whisperPrompt !== '') form.set('prompt', whisperPrompt);
       const response = await this.#request(`${this.#options.whisperUrl}/inference`, { method: 'POST', body: form }, context.signal);
       return parseInferenceResponse(response, whisperResponseSchema);
     }, context.signal);
@@ -164,7 +219,7 @@ export class LocalInference implements InferenceClient {
     const rawSegments = result.segments ?? (result.text.trim().length === 0 ? [] : [{ text: result.text, start: 0, end: context.duration }]);
     const segments: LocalSegment[] = [];
     for (const [index, raw] of rawSegments.entries()) {
-      const sourceText = raw.text.trim();
+      const sourceText = applyReplacementRules(raw.text.trim(), glossary);
       if (sourceText.length === 0) continue;
       let translation: string | null = null;
       let translationError: string | null = null;
@@ -191,9 +246,13 @@ export class LocalInference implements InferenceClient {
     return segments;
   }
 
-  async translate(text: string, context: readonly TranslationContextTurn[] = [], signal?: AbortSignal) {
+  async translate(text: string, context: readonly TranslationContextTurn[] = [], signal?: AbortSignal, options?: { readonly polish?: boolean }) {
     const startedAt = performance.now();
-    const translated = await this.#ollamaQueue.run(() => this.#translateDirect(text, context, signal), signal);
+    const polish = options?.polish !== false;
+    // Replacement rules are deterministic — apply them to the input text so
+    // direct translations match what the ASR path already produces.
+    const prepared = applyReplacementRules(text, this.#options.getGlossary?.() ?? []);
+    const translated = await this.#ollamaQueue.run(() => this.#translateDirect(prepared, context, signal, polish), signal);
     return translationSchema.parse({ text: translated, elapsedMs: performance.now() - startedAt });
   }
 
@@ -227,9 +286,15 @@ export class LocalInference implements InferenceClient {
     text: string,
     context: readonly TranslationContextTurn[] = [],
     signal?: AbortSignal,
+    polish = true,
   ): Promise<string> {
-    const content = await this.#ollama(
+    const system = appendGlossaryAndPolish(
       '일본어 발언의 현재 문장만 자연스럽고 충실한 한국어로 통역하세요. targetRegister가 plain이면 반드시 비격식체로, polite이면 반드시 존댓말로, preserve이면 원문의 말투를 그대로 옮기세요. 이전 문맥은 호칭, 어조, 생략된 주어와 용어를 일관되게 해석하는 데만 사용하고 번역문에 반복하지 마세요. 질문, 확신, 완곡함을 유지하세요. 문장이 덜 끝났다면 내용을 추측해 완성하지 마세요. 통역 전문 용어는 정확히 옮기고 同時通訳는 동시통역으로 번역하세요. 고유명사는 임의로 음역하거나 바꾸지 말고, 불확실하면 원문을 보존하세요. 설명이나 추측을 추가하지 마세요.',
+      this.#options.getGlossary?.() ?? [],
+      polish,
+    );
+    const content = await this.#ollama(
+      system,
       JSON.stringify({ context, targetRegister: translationRegister(text), current: text }),
       { type: 'object', properties: { ko: { type: 'string' } }, required: ['ko'] },
       signal,

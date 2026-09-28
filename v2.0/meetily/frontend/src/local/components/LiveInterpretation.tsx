@@ -1,10 +1,11 @@
 'use client';
 
-import { CircleStop, Mic } from 'lucide-react';
+import { CircleStop, Mic, Sparkles } from 'lucide-react';
 
 import type { ServiceStatus } from '../contracts';
 import { InterpretationView } from './InterpretationView';
 import { useLiveInterpretation } from './useLiveInterpretation';
+import { usePolishPreference } from './usePolishPreference';
 
 type Props = {
   readonly status: ServiceStatus | null;
@@ -13,7 +14,8 @@ type Props = {
 };
 
 export function LiveInterpretation({ status, onClose, onRefreshStatus }: Props) {
-  const live = useLiveInterpretation({ status });
+  const [polish, setPolish] = usePolishPreference();
+  const live = useLiveInterpretation({ status, polish });
   const capturing = live.phase === 'recording' || live.phase === 'requesting';
   const elapsed = `${String(Math.floor(live.elapsed / 60)).padStart(2, '0')}:${String(Math.floor(live.elapsed % 60)).padStart(2, '0')}`;
   const label = live.phase === 'recording' ? '일본어를 듣고 있습니다'
@@ -53,6 +55,15 @@ export function LiveInterpretation({ status, onClose, onRefreshStatus }: Props) 
                   <option value="both">컴퓨터 소리 + 마이크</option>
                 </select>
           </label>
+          <button
+            type="button"
+            onClick={() => setPolish(!polish)}
+            aria-pressed={polish}
+            title={polish ? '정제 켜짐: 필러·반복을 제거한 자연스러운 통역' : '정제 꺼짐: 원문에 충실한 통역'}
+            className={'flex h-11 items-center gap-2 rounded-lg border px-4 text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ' + (polish ? 'border-blue-600 bg-blue-50 text-blue-800' : 'border-slate-300 bg-white text-slate-600')}
+          >
+            <Sparkles aria-hidden="true" className="h-4 w-4" /> 정제
+          </button>
           {capturing ? (
             <button type="button" onClick={() => void live.stop()} className="flex h-11 items-center gap-2 rounded-lg bg-red-600 px-4 text-sm font-semibold text-white outline-none hover:bg-red-700 focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2">
               <CircleStop aria-hidden="true" className="h-4 w-4" /> 통역 중지

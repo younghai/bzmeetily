@@ -13,6 +13,8 @@ export type InterpretationViewItem = {
   readonly translation: string | null;
   readonly error?: string | null;
   readonly timestamp?: string | number;
+  /** Dominant speaker of the utterance ("mic" = local user, "system" = remote). */
+  readonly speaker?: 'mic' | 'system';
 };
 
 export type InterpretationViewProps = {
@@ -215,7 +217,10 @@ export function InterpretationView({ open, items, pending = false, onClose, onRe
                 {items.length === 0 && !pending && <p className="py-12 text-center text-sm text-slate-500">통역할 원문을 기다리고 있습니다.</p>}
                 {groups.map((group, index) => (
                   <article key={group[0].id} data-conversation-index={index}>
-                    {formatTimestamp(group[0].timestamp) && <p className="mb-2 text-xs tabular-nums text-slate-400">{formatTimestamp(group[0].timestamp)}</p>}
+                    <p className="mb-2 flex items-center gap-2">
+                      {formatTimestamp(group[0].timestamp) && <span className="text-xs tabular-nums text-slate-400">{formatTimestamp(group[0].timestamp)}</span>}
+                      {group[0].speaker && <SpeakerBadge speaker={group[0].speaker} />}
+                    </p>
                     <JapaneseText text={group.map((item) => item.sourceText).join('')} className="block text-lg leading-9 text-slate-900 sm:text-xl sm:leading-10" />
                   </article>
                 ))}
@@ -239,7 +244,10 @@ export function InterpretationView({ open, items, pending = false, onClose, onRe
                 {items.length === 0 && !pending && <p className="py-12 text-center text-sm text-slate-500">한국어 통역을 기다리고 있습니다.</p>}
                 {groups.map((group, index) => (
                   <article key={group[0].id} data-conversation-index={index}>
-                    {formatTimestamp(group[0].timestamp) && <p className="mb-2 text-xs tabular-nums text-blue-500">{formatTimestamp(group[0].timestamp)}</p>}
+                    <p className="mb-2 flex items-center gap-2">
+                      {formatTimestamp(group[0].timestamp) && <span className="text-xs tabular-nums text-blue-500">{formatTimestamp(group[0].timestamp)}</span>}
+                      {group[0].speaker && <SpeakerBadge speaker={group[0].speaker} />}
+                    </p>
                     {group.some((item) => item.translation) && (
                       <KoreanText text={group.map((item) => item.translation ?? '').filter(Boolean).join(' ')} className="block text-lg leading-9 text-slate-900 [word-break:keep-all] sm:text-xl sm:leading-10" />
                     )}
@@ -261,4 +269,22 @@ export function InterpretationView({ open, items, pending = false, onClose, onRe
     </div>
   );
   return typeof document === 'undefined' ? dialog : createPortal(dialog, document.body);
+}
+
+type SpeakerBadgeProps = {
+  readonly speaker: 'mic' | 'system';
+};
+
+/** Utterance attribution from the mixing pipeline: mic = local user,
+ * system = remote party. */
+export function SpeakerBadge({ speaker }: SpeakerBadgeProps) {
+  const isMic = speaker === 'mic';
+  return (
+    <span
+      className={'rounded-full px-2 py-0.5 text-[11px] font-semibold ' + (isMic ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800')}
+      title={isMic ? '마이크 입력 (나)' : '컴퓨터 소리 (상대)'}
+    >
+      {isMic ? '나' : '상대'}
+    </span>
+  );
 }

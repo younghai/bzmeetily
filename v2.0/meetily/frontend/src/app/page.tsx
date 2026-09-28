@@ -20,6 +20,7 @@ import { TranscriptRecovery } from '@/components/TranscriptRecovery';
 import { indexedDBService } from '@/services/indexedDBService';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
+import { GlossaryManager } from '@/local/components/GlossaryManager';
 import { SessionModeChooser, type SessionMode } from '@/local/components/SessionModeChooser';
 import { SetupGate } from '@/local/components/SetupWizard';
 
@@ -29,6 +30,7 @@ export default function Home() {
   const [barHeights, setBarHeights] = useState(['58%', '76%', '58%']);
   const [showRecoveryDialog, setShowRecoveryDialog] = useState(false);
   const [sessionMode, setSessionMode] = useState<SessionMode | null>(null);
+  const [glossaryOpen, setGlossaryOpen] = useState(false);
 
   // Use contexts for state management
   const { meetingTitle } = useTranscripts();
@@ -221,6 +223,8 @@ export default function Home() {
         onClose={hideModal}
       />
 
+      <GlossaryManager open={glossaryOpen} onClose={() => setGlossaryOpen(false)} />
+
       {/* Recovery Dialog */}
       <TranscriptRecovery
         isOpen={showRecoveryDialog}
@@ -240,6 +244,7 @@ export default function Home() {
               <SessionModeChooser
                 disabled={recordingState.isRecording || isProcessingStop || isSaving}
                 onSelect={setSessionMode}
+                onOpenGlossary={() => setGlossaryOpen(true)}
               />
             </SetupGate>
           </main>

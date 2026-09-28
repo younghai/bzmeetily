@@ -5,7 +5,6 @@ import 'sonner/dist/styles.css';
 import dynamic from 'next/dynamic';
 import { isTauri } from '@tauri-apps/api/core';
 import { useEffect, useState, type ReactNode } from 'react';
-import { MacWindowControls } from '@/components/runtime/MacWindowControls';
 
 const DesktopShell = dynamic(() => import('@/components/runtime/DesktopShell'), { ssr: false });
 const WebWorkspace = dynamic(() => import('@/local/components/WebWorkspace'), { ssr: false });
@@ -23,12 +22,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <body className="font-sans antialiased">
         {native === null ? (
           <main className="flex min-h-screen items-center justify-center bg-gray-50 text-gray-600" role="status">Meetily를 준비하고 있습니다…</main>
-        ) : native ? (
-          <>
-            <DesktopShell>{children}</DesktopShell>
-            <MacWindowControls />
-          </>
-        ) : <WebWorkspace />}
+        ) : native ? <DesktopShell>{children}</DesktopShell> : <WebWorkspace />}
       </body>
     </html>
   );

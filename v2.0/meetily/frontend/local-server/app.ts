@@ -6,6 +6,7 @@ import { ZodError, z } from 'zod';
 
 import {
   chunkQuerySchema,
+  createGlossaryTermSchema,
   chunkResultSchema,
   createMeetingSchema,
   importResultSchema,
@@ -14,6 +15,9 @@ import {
   summarySchema,
   translationRequestSchema,
   type LocalSegment,
+  updateGlossaryTermSchema,
+  glossaryTermListSchema,
+  glossaryIdSchema,
 } from '../src/local/contracts';
 import { LocalServerError } from './errors';
 import { convertImportToWav } from './import-audio';
@@ -143,6 +147,28 @@ async function routeApi(
   if (url.pathname === '/api/local/translate' && request.method === 'POST') {
     const input = translationRequestSchema.parse(await readJson(request, 32 * 1024));
     return json(await options.inference.translate(input.text, input.context, request.signal));
+  if (url.pathname === '/api/local/glossary' && request.method === 'GET') {
+    return json(glossaryTermListSchema.parse(options.getStore().listGlossary()));
+  }
+  if (url.pathname === '/api/local/glossary' && request.method === 'POST') {
+    const input = createGlossaryTermSchema.parse(await readJson(request, 32 * 1024));
+    return json(options.getStore().createGlossaryTerm(input), 201);
+  }
+  const glossaryIdFromPath = url.pathname.match(/^\/api\/local\/glossary\/(glossary-[a-zA-Z0-9-]{8,80})$/)?.[1];
+  if (glossaryIdFromPath !== undefined) {
+    const id = glossaryIdSchema.parse(glossaryIdFromPath);
+    if (request.method === 'PATCH') {
+      const input = updateGlossaryTermSchema.parse(await readJson(request, 32 * 1024));
+      const updated = options.getStore().updateGlossaryTerm(id, input);
+      if (updated === null) throw new LocalServerError('NOT_FOUND', 404, 'Glossary term not found');
+      return json(updated);
+    }
+    if (request.method === 'DELETE') {
+      if (!options.getStore().deleteGlossaryTerm(id)) throw new LocalServerError('NOT_FOUND', 404, 'Glossary term not found');
+      return new Response(null, { status: 204 });
+    }
+    throw new LocalServerError('METHOD_NOT_ALLOWED', 405, 'Method not allowed');
+  }
   }
   if (url.pathname === '/api/local/transcribe' && request.method === 'POST') {
     if (request.headers.get('content-type')?.split(';')[0] !== 'audio/wav') throw new LocalServerError('UNSUPPORTED_MEDIA', 415, 'Expected audio/wav');

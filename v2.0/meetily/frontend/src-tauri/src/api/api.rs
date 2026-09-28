@@ -1143,6 +1143,16 @@ pub async fn debug_backend_connection<R: Runtime>(app: AppHandle<R>) -> Result<S
 pub async fn open_external_url(url: String) -> Result<(), String> {
     use std::process::Command;
 
+    // Only http(s) may be opened. An unvalidated string reaches `cmd /C
+    // start` / `open`, which would let a compromised webview launch local
+    // applications or inject shell metacharacters.
+    let trimmed = url.trim().to_string();
+    let parsed = reqwest::Url::parse(&trimmed).map_err(|e| format!("Invalid URL: {e}"))?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        other => return Err(format!("Unsupported URL scheme: {}", other)),
+    }
+
     let result = if cfg!(target_os = "windows") {
         Command::new("cmd").args(&["/C", "start", &url]).output()
     } else if cfg!(target_os = "macos") {
