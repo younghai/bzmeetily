@@ -2,7 +2,7 @@
 
 Meetily2 is a local-first AI meeting assistant for Apple Silicon Macs. It offers two separate workflows: live Japanese-to-Korean interpretation, and meeting recording, transcription, and Korean summaries. The desktop app also serves a browser interface at `http://127.0.0.1:3118/` on the same Mac.
 
-> **Release status (24 September 2026):** The `2.0.2-rc.6` DMG is an ad-hoc development candidate, not an approved public installer. RC4 exercised combined computer audio and microphone on the build Mac; RC6 additionally fixes the native window-control layout. Mixed-input accuracy, long-session memory use, Developer ID signing, notarization, and a clean-Mac test remain release gates. See [review status](reviews/STATE.md) and the [DMG audit](v2.0/docs/distribution-dmg.md) before relying on a build for a meeting.
+> **Release status (29 September 2026):** The `2.0.2-rc.6` DMG is an ad-hoc development candidate, not an approved public installer. Since that DMG was packaged, `main` additionally merged the glossary, polish, speaker-labeling, security, and stability work described below; rebuild from source to obtain it. Mixed-input accuracy, long-session memory use, Developer ID signing, notarization, and a clean-Mac test remain release gates. See [review status](reviews/STATE.md) and the [DMG audit](v2.0/docs/distribution-dmg.md) before relying on a build for a meeting.
 
 ## Latest macOS app and updates
 
@@ -27,6 +27,21 @@ Changes included in RC6 compared with the older 2.0.1 DMG:
 | DMG packaging | Refuses to overwrite an existing same-version image and checks the app bundle for local build-home paths before packaging. |
 
 The RC6 app's window controls were exercised on the build Mac, including full-screen entry/exit, minimization, and close-to-tray. A prior RC4 build produced four retained Japanese/Korean timeline turns from combined audio on that Mac; RC6 includes that audio code, but its audio accuracy and long-session memory use have not been remeasured. The [release notes](v2.0/docs/release-2.0.2-rc.6.md) list the remaining validation and distribution gates.
+
+### Changes merged into `main` after the RC6 DMG (29 September 2026)
+
+The RC6 release asset predates the following; they exist on `main` and in a source-rebuilt DMG:
+
+| Area | What changed |
+| --- | --- |
+| Glossary | Proper nouns and terms can be registered from a first-screen manager (`용어집 관리`). Terms bias Whisper's transcription prompt and the translation prompt; `replacement` rules additionally rewrite recognized text deterministically (for example `ミティリー` → `Meetily`). Edits apply to the next chunk without restarting services. |
+| Translation polish | A **polish** toggle on the interpretation screen (default on, persisted per session) removes fillers and meaningless repetition from the Korean output in the same LLM call, without extra latency. |
+| Speaker labeling | Each mixing window is attributed to the dominant source (microphone = local user, computer audio = remote party) and each captioned turn is labeled 나/상대 in the timeline, exports included. Two-party labeling only; no new model is added. |
+| Security | `open_external_url` accepts only http/https URLs; the `fs:read-all`/`fs:write-all` capability grants were removed (the frontend does not use the fs plugin). |
+| Stability | The transcription queue is capped (128 segments) with depth/drop counters surfaced in status; the recording-stop tail is bounded (90 s transcription wait, 120 s save wait); Whisper models stay warm between sessions; whisper-server answering 503 during model load is no longer flagged as a port conflict. |
+| Tooling | `v2.0/scripts/benchmark.sh` measures per-chunk transcription and per-segment translation latency and writes a markdown report; a regression test now exercises the glossary HTTP routes end to end. |
+
+Verification after the merge: `cargo test --lib` (259 passed), `tsc --noEmit` clean, `pnpm test:local` (114 passed), the 8-check smoke test, and in-app E2E (glossary CRUD returns 200 with stored terms; polish translation round-trip). The glossary, polish, and speaker-label features still need live speech validation on the build Mac.
 
 ## What it does
 

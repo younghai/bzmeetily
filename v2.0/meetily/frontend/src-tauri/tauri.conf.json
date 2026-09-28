@@ -1,7 +1,7 @@
 {
     "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
     "productName": "Meetily2",
-  "version": "2.0.2-rc.6",
+    "version": "2.0.2-rc.6",
     "identifier": "ai.meetily.interp",
     "build": {
         "frontendDist": "../out",
@@ -46,8 +46,6 @@
                     "permissions": [
                         "fs:default",
                         "fs:allow-read-file",
-                        "fs:read-all",
-                        "fs:write-all",
                         "fs:allow-app-read",
                         "fs:allow-app-write",
                         "fs:allow-download-write",
